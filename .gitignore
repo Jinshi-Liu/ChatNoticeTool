@@ -1,0 +1,29 @@
+# Private local configuration and ownership
+/config.json
+/.chatnotice-owned.json
+# Never publish messages, keys, progress, snapshots or third-party research
+/state/
+/exports/
+/runtime/
+/research/
+/vendor/
+# Environments and build artifacts
+/.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+/dist/
+/build/
+# Secrets and local database/media artifacts
+.env
+.env.*
+*.dpapi
+*.db
+*.db-*
+*.sqlite3
+*.sqlite3-*
+*.log
+*.lnk
+.DS_Store
+Thumbs.db

@@ -1,0 +1,203 @@
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+ROOT=Path(__file__).resolve().parents[1]
+sys.path.insert(0,str(ROOT))
+from todo_store import TodoStore
+from todo_widget import TodoWidget
+
+
+@unittest.skipUnless(sys.platform=='win32','Windows Tk modeless-window tests')
+class DetailTests(unittest.TestCase):
+    def setUp(self):
+        import tkinter as tk
+        (ROOT/'runtime').mkdir(exist_ok=True)
+        self.tmp=tempfile.TemporaryDirectory(dir=ROOT/'runtime')
+        self.store=TodoStore(Path(self.tmp.name)/'todos.sqlite3')
+        self.store.upsert('第一项',id='a',due='2026-10-13',due_label='10/13课前',note='原内容')
+        self.store.upsert('第二项',id='b',note='内容B')
+        self.root=tk.Tk(); self.root.withdraw()
+        self.app=TodoWidget(self.root,self.store)
+        self.root.update()
+    def tearDown(self):
+        for editor in list(self.app.details_windows.values()): editor.close(force=True)
+        self.app.close(); self.tmp.cleanup()
+    def open(self,id):
+        editor=self.app.details(self.store.get(id)); editor.window.withdraw()
+        self.root.update(); return editor
+    def test_multiple_details_no_grab_and_main_operable(self):
+        a=self.open('a'); b=self.open('b')
+        self.assertNotEqual(a.window,b.window)
+        self.assertIsNone(self.root.grab_current())
+        self.assertEqual(str(a.window.transient()),'')
+        self.app.checkbuttons['b'].invoke()
+        self.assertTrue(self.store.get('b')['done'])
+        self.assertTrue(a.window.winfo_exists()); self.assertTrue(b.window.winfo_exists())
+        self.assertEqual(len(self.app.details_windows),2)
+    def test_same_task_reuses_its_window(self):
+        a=self.open('a')
+        self.assertIs(self.app.editor(self.store.get('a')),a)
+        self.assertEqual(len(self.app.details_windows),1)
+    def test_edit_directly_and_preserve_external_check(self):
+        a=self.open('a')
+        self.assertEqual(a.note.cget('state'),'normal')
+        self.store.mark('a',True)
+        a.note.insert('end',' 新内容'); self.root.update()
+        self.assertTrue(a.save())
+        self.assertEqual(self.store.get('a')['note'],'原内容 新内容')
+        self.assertTrue(self.store.get('a')['done'])
+        self.assertTrue(a.window.winfo_exists())
+    def test_two_editors_save_independently(self):
+        a=self.open('a'); b=self.open('b')
+        a.note.insert('end',' A'); b.note.insert('end',' B'); self.root.update()
+        self.assertTrue(a.save()); self.assertTrue(b.save())
+        self.assertEqual(self.store.get('a')['note'],'原内容 A')
+        self.assertEqual(self.store.get('b')['note'],'内容B B')
+    def test_external_same_field_conflict_retains_draft(self):
+        a=self.open('a')
+        a.note.insert('end',' 本地草稿'); self.root.update()
+        original=self.store.get('a')
+        self.store.patch_fields('a',{'note':'别处更新'},original)
+        self.assertFalse(a.save())
+        self.assertEqual(self.store.get('a')['note'],'别处更新')
+        self.assertIn('本地草稿',a.note.get('1.0','end'))
+    def test_date_change_clears_stale_label(self):
+        a=self.open('a'); a.due_var.set('2026-10-16')
+        self.assertTrue(a.save())
+        self.assertEqual(self.store.get('a')['due_label'],'')
+    def test_invalid_date_does_not_close_or_overwrite(self):
+        a=self.open('a'); a.due_var.set('星期八')
+        self.assertFalse(a.save())
+        with patch('todo_detail.messagebox.askyesno',return_value=False): self.assertFalse(a.close())
+        self.assertTrue(a.window.winfo_exists())
+        self.assertEqual(self.store.get('a')['due'],'2026-10-13')
+    def test_close_saves_dirty_note(self):
+        a=self.open('a'); a.note.insert('end',' 关闭保存')
+        self.assertTrue(a.close())
+        self.assertEqual(self.store.get('a')['note'],'原内容 关闭保存')
+    def test_editor_has_same_window_icon(self):
+        a=self.open('a'); b=self.open('b')
+        self.assertEqual(a.window.iconbitmap(),b.window.iconbitmap())
+        self.assertEqual(a.window.iconbitmap(),self.root.iconbitmap())
+    def test_minimal_layout_and_hand_drawn_icons(self):
+        a=self.open('a')
+        self.assertFalse(a.status.winfo_manager())
+        self.assertFalse(self.app.subtitle.winfo_manager())
+        self.assertFalse(self.app.status.winfo_manager())
+        self.assertEqual(a.complete_button.kind,'check')
+        self.assertGreaterEqual(self.app.pin_button.size,48)
+        self.assertTrue(all(self.app.pin_button.type(i)=='line' for i in self.app.pin_button.find_withtag('icon')))
+        row=self.app.canvas.rows['a']
+        self.assertNotIn('glass',row)
+        self.assertNotIn('circle',row)
+        self.assertEqual(self.app.canvas.itemcget(row['tick'],'state'),'normal')
+
+    def test_header_does_not_overlap_at_high_dpi(self):
+        control=self.app.segment
+        old=float(self.root.tk.call('tk','scaling'))
+        try:
+            for scale in (1,1.5,2,3):
+                self.root.tk.call('tk','scaling',scale)
+                self.root.update_idletasks()
+                self.assertLess(control.bbox(control.left)[2],control.bbox(control.left_count)[0])
+                self.assertLess(control.bbox(control.left_count)[2],control.bbox(control.right)[0])
+                self.assertLess(control.bbox(control.right)[2],control.bbox(control.right_count)[0])
+        finally: self.root.tk.call('tk','scaling',old)
+
+    def test_draft_hints_save_icon_and_explicit_save(self):
+        draft=self.app.editor(); draft.window.withdraw(); self.root.update()
+        self.assertEqual(draft.complete_button.kind,'save')
+        self.assertEqual(draft.title.winfo_class(),'Entry')
+        self.assertEqual(draft.title.get(),'')
+        self.assertEqual(draft.title.hint.winfo_manager(),'place')
+        self.assertEqual(draft.due.hint.winfo_manager(),'place')
+        draft.title.insert(0,'新的作业')
+        draft.due_var.set('2026-10-18 09:00')
+        self.root.update()
+        self.assertIsNone(draft.pending)
+        self.assertIsNone(draft.task)
+        self.assertEqual(draft.title.hint.winfo_manager(),'')
+        draft.complete_button.invoke()
+        self.assertIsNotNone(draft.task)
+        self.assertFalse(self.store.get(draft.task['id'])['done'])
+        self.assertEqual(draft.complete_button.kind,'check')
+        self.assertEqual(self.store.get(draft.task['id'])['title'],'新的作业')
+
+    def test_completed_icons_are_undo_and_restore(self):
+        self.store.mark('a',True); self.app.switch(True)
+        a=self.open('a')
+        self.assertEqual(a.complete_button.kind,'undo')
+        row=self.app.canvas.rows['a']
+        self.assertEqual(self.app.canvas.itemcget(row['tick'],'state'),'hidden')
+        self.assertEqual(self.app.canvas.itemcget(row['undo_curve'],'state'),'normal')
+        a.complete_button.invoke()
+        self.assertFalse(self.store.get('a')['done'])
+        self.assertEqual(a.complete_button.kind,'check')
+
+    def test_pin_active_color_and_single_line_title(self):
+        from glass_style import PIN_ACTIVE
+        pin=self.app.pin_button
+        pin.set_active(False)
+        off={pin.itemcget(i,'fill') for i in pin.find_withtag('icon')}
+        pin.set_active(True)
+        on={pin.itemcget(i,'fill') for i in pin.find_withtag('icon')}
+        self.assertNotEqual(off,on); self.assertEqual(on,{PIN_ACTIVE})
+        a=self.open('a')
+        self.assertEqual(a.title.winfo_class(),'Entry')
+        a.title.delete(0,'end'); a.title.insert(0,'很长的标题'*30)
+        self.assertTrue(a.save())
+        self.assertEqual(len(self.store.get('a')['title']),150)
+
+    def test_main_completion_updates_open_editor_icon(self):
+        a=self.open('a')
+        self.app.checkbuttons['a'].invoke()
+        self.assertEqual(a.complete_button.kind,'undo')
+
+    def test_one_deadline_preserves_qualifier(self):
+        a=self.open('a')
+        self.assertFalse(hasattr(a,'due_label'))
+        self.assertEqual(a.due_var.get(),'2026-10-13 课前')
+        a.note.insert('end',' 修改正文'); self.root.update(); self.assertTrue(a.save())
+        self.assertEqual(self.store.get('a')['due_label'],'10/13课前')
+        a.due_var.set('2026-10-15 09:00 上课前')
+        self.assertTrue(a.save())
+        self.assertEqual(self.store.get('a')['due'],'2026-10-15T09:00')
+        self.assertIn('上课前',self.store.get('a')['due_label'])
+        a.close(); a=self.open('a')
+        self.assertEqual(a.due_var.get(),'2026-10-15 09:00 上课前')
+
+    def test_trash_directly_removes_without_menu(self):
+        from types import SimpleNamespace
+        task=self.store.get('a')
+        row=self.app.canvas.rows['a']
+        self.assertIn('trash_body',row)
+        self.assertNotIn('dot0',row)
+        with patch('todo_widget.messagebox.askyesno',return_value=False):
+            self.app.context_menu(task)
+        self.assertFalse(self.store.get('a')['removed'])
+        left,top,right,bottom=self.app.canvas.coords(row['menu_hit'])
+        with patch('todo_widget.messagebox.askyesno',return_value=True):
+            self.app.canvas.click_row('a',SimpleNamespace(x=(left+right)/2,y=(top+bottom)/2))
+        self.assertTrue(self.store.get('a')['removed'])
+        self.assertIsNone(self.app.active_menu)
+
+    def test_larger_fonts_in_list_and_editor(self):
+        a=self.open('a')
+        canvas=self.app.canvas; row=canvas.rows['a']
+        for name,pixels in (('title',34),('meta',26),('preview',28)):
+            self.assertEqual(int(self.root.tk.splitlist(canvas.itemcget(row[name],'font'))[1]),-pixels)
+        for widget,pixels in ((a.title,38),(a.due,27),(a.note,30)):
+            self.assertEqual(int(self.root.tk.splitlist(widget.cget('font'))[1]),-pixels)
+        self.assertEqual(a.title.winfo_class(),'Entry')
+
+    def test_auto_save_timer(self):
+        a=self.open('a'); a.note.insert('end',' 自动'); self.root.update()
+        self.assertIsNotNone(a.pending)
+        self.root.after(1250,self.root.quit); self.root.mainloop()
+        self.assertEqual(self.store.get('a')['note'],'原内容 自动')
+
+
+if __name__=='__main__': unittest.main()

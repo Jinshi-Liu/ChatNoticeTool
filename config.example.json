@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "qq": {
+    "version": "9.9.21.38711",
+    "database_dir": "",
+    "media_dir": ""
+  },
+  "wechat": {
+    "version": "4.1.15.13",
+    "account_dir": "",
+    "database_dir": ""
+  },
+  "attachments": {
+    "extra_allowed_roots": []
+  },
+  "policy": {
+    "include_all_message_types": true,
+    "download_remote_media": false,
+    "allow_process_memory_read": false,
+    "allow_process_memory_write": false,
+    "allow_debugger": false,
+    "allow_sending": false,
+    "background_monitoring": false
+  }
+}

@@ -1,0 +1,7 @@
+# Chat database decoding and optional local attachment parsing.
+# The standalone todo widget uses only the Python standard library.
+cryptography>=44,<47
+Pillow>=11,<13
+zstandard>=0.23,<1
+pypdf>=5,<7
+olefile==0.47

@@ -1,0 +1,21 @@
+name: Synthetic tests
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+      - name: Install isolated dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Run synthetic tests only
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python -B -X utf8 -m unittest discover -s tests -q
