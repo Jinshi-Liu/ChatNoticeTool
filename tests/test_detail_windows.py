@@ -297,6 +297,33 @@ class DetailTests(unittest.TestCase):
         self.assertEqual(int(self.root.tk.splitlist(a.note.cget('font'))[1]),-30)
         self.assertEqual(self.app.canvas.itemcget(row['preview'],'state'),'normal')
 
+    def test_small_header_four_controls_share_one_alignment(self):
+        self.root.geometry('367x180+20+20'); self.root.deiconify(); self.root.update()
+        segment=self.app.segment
+        self.assertEqual(segment.pack_info()['side'],'left')
+        y=segment.winfo_rooty()+segment.coords(segment.left)[1]
+        self.assertEqual(segment.coords(segment.left)[1],segment.coords(segment.right)[1])
+        for button in (self.app.pin_button,self.app.add_button):
+            self.assertAlmostEqual(button.winfo_rooty()+button.winfo_height()/2,y,delta=2)
+            self.assertLessEqual(button.winfo_rootx()+button.winfo_width(),self.root.winfo_rootx()+self.root.winfo_width())
+        self.assertEqual(int(self.root.tk.splitlist(segment.itemcget(segment.left,'font'))[1]),-32)
+
+    def test_extreme_narrow_header_is_aligned_and_reflows_without_font_change(self):
+        self.root.deiconify()
+        for width in (220,250,367,240,280):
+            self.root.geometry(f'{width}x180+20+20'); self.root.update()
+            segment=self.app.segment
+            if width<280:
+                self.assertEqual(segment.pack_info()['side'],'top')
+                for button,item in ((self.app.pin_button,segment.left),(self.app.add_button,segment.right)):
+                    box=segment.bbox(item)
+                    center=segment.winfo_rootx()+(box[0]+box[2])/2
+                    self.assertAlmostEqual(button.winfo_rootx()+button.winfo_width()/2,center,delta=3)
+            else: self.assertEqual(segment.pack_info()['side'],'left')
+            self.assertAlmostEqual(self.app.pin_button.winfo_rooty()+self.app.pin_button.winfo_height()/2,
+                                   self.app.add_button.winfo_rooty()+self.app.add_button.winfo_height()/2,delta=1)
+            self.assertEqual(int(self.root.tk.splitlist(segment.itemcget(segment.right,'font'))[1]),-32)
+
     def test_small_detail_size_remembered_per_task(self):
         a=self.open('a'); a.window.geometry('220x160+20+20'); a.window.deiconify(); self.root.update()
         a.close()

@@ -110,12 +110,18 @@ class TodoWidget:
     def resize_layout(self,event):
         if event.widget!=self.root or event.width<220 or event.height<160: return
         value=event.width<420 or event.height<300
-        if value==self.compact: return
-        self.compact=value
+        # Only wrap when unchanged large text + both controls cannot fit.
+        stacked=value and event.width<280
+        layout=(value,stacked,event.width if stacked else None)
+        if layout==getattr(self,'header_layout',None): return
+        self.header_layout=layout; self.compact=value
         self.header.pack_configure(padx=8 if value else 24,pady=(6,0) if value else (18,4))
         self.body.pack_configure(padx=(6,4) if value else (18,10))
-        self.add_button.pack_configure(padx=(4,0) if value else (6,0))
-        self.segment.pack_configure(side='top' if value else 'left',anchor='w')
+        # In the narrow fallback, pin/plus align below the two tab labels.
+        add_padding=(0,event.width-170) if stacked else ((4,0) if value else (6,0))
+        self.add_button.pack_configure(padx=add_padding,pady=(0,9))
+        self.pin_button.pack_configure(padx=(0,76) if stacked else (0,0),pady=(0,9))
+        self.segment.pack_configure(side='top' if stacked else 'left',anchor='w')
         self.segment.set_compact(value)
         for button in (self.add_button,self.pin_button): button.set_size(28 if value else 48)
         self.canvas.set_compact(value)
