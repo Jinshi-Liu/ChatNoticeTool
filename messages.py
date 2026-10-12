@@ -292,7 +292,7 @@ def export_request(config: dict, request: dict) -> dict:
                            attachment_content_status='unknown')
             errors.append({'source_id':identity,'error':str(exc)})
         readable.append(message)
-    batch=datetime.now(LOCAL_TZ).strftime('%Y%m%d-%H%M%S')
+    batch=datetime.now(LOCAL_TZ).strftime('%Y%m%d-%H%M%S-%f')
     output=project_path('exports/'+batch)
     output.mkdir(parents=True,exist_ok=False)
     sealed=protect_secret(json.dumps(json_safe(raw),ensure_ascii=False).encode('utf-8'))

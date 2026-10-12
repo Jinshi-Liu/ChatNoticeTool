@@ -4,6 +4,7 @@ Each task has its own window. Per-field optimistic merge protects other writers.
 from __future__ import annotations
 import sqlite3
 import re
+from datetime import datetime
 import tkinter as tk
 from tkinter import messagebox
 from pathlib import Path
@@ -24,15 +25,17 @@ def deadline_text(due, label):
     return due.replace('T',' ')+((' '+suffix) if suffix else '')
 
 
-def parse_deadline_text(text):
+def parse_deadline_text(text,reference_date=None):
     text=text.strip()
     if not text: return None,''
     if text in ('截止待确认','未设截止','待确认'): return None,text
-    match=re.fullmatch(r'(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}:\d{2}))?(?:\s+(.+))?',text)
-    if not match: raise ValueError('时间格式：2026-10-13，可加09:00或“上课前”')
-    date,clock,qualifier=match.groups()
-    due=normalize_due(date+('T'+clock if clock else ''))
-    # Preserve the full date in the label so list badges remain self-contained.
+    match=re.fullmatch(r'(?:(\d{4})[-/年])?(\d{1,2})[-/月](\d{1,2})(?:日)?'
+                       r'(?:[ T]+(\d{1,2}):(\d{2}))?(?:\s*([^\d\s].*))?',text)
+    if not match: raise ValueError('时间可填 10/13、10月13日或2026-10-13，可加09:00或“上课前”')
+    year,month,day,hour,minute,qualifier=match.groups()
+    year=int(year or (reference_date[:4] if reference_date else datetime.now().year))
+    date=f'{year:04d}-{int(month):02d}-{int(day):02d}'
+    due=normalize_due(date+(f'T{int(hour):02d}:{minute}' if hour is not None else ''))
     return due,(due.replace('T',' ')+' '+qualifier if qualifier else '')
 
 
@@ -70,17 +73,21 @@ class DetailWindow:
         x=max(10,min(app.root.winfo_x()-570+offset,win.winfo_screenwidth()-590))
         y=max(10,min(app.root.winfo_y()+40+offset,win.winfo_screenheight()-640))
         win.geometry(f'560x590+{x}+{y}')
-        win.attributes('-topmost',app.pinned)
+        self.pinned=bool(self.store.setting('detail_pinned:'+task['id'],False)) if task else False
+        win.attributes('-topmost',self.pinned)
         icon=Path(__file__).resolve().parent/'todo.ico'
         if icon.exists(): win.iconbitmap(str(icon))
-        top=tk.Frame(win,bg=BG); top.pack(fill='x',padx=26,pady=(24,14))
+        top=tk.Frame(win,bg=BG); top.pack(fill='x',padx=26,pady=(18,4))
         self.complete_button=IconButton(top,'save' if task is None else ('undo' if task['done'] else 'check'),self.primary_action)
         self.complete_button.pack(side='right',anchor='n',padx=(14,0))
         self.title_var=tk.StringVar(value=task['title'] if task else '')
         self.title=HintEntry(top,textvariable=self.title_var,hint='输入标题',width=1,font=(FONT,-38,'bold'),bg=BG,fg=INK,
             insertbackground=ACCENT,bd=0,highlightthickness=0)
-        self.title.pack(side='left',fill='x',expand=True,ipady=6)
-        date_row=tk.Frame(win,bg=BG); date_row.pack(fill='x',padx=30,pady=(0,18))
+        self.title.pack(side='left',fill='x',expand=True,ipady=1)
+        date_row=tk.Frame(win,bg=BG); date_row.pack(fill='x',padx=30,pady=(0,10))
+        self.pin_button=IconButton(date_row,'pin',self.toggle_pin)
+        self.pin_button.pack(side='right',padx=(8,0))
+        self.pin_button.set_active(self.pinned)
         self.deadline_original=(task['due'],task['due_label']) if task else (None,'')
         self.deadline_original_text=deadline_text(*self.deadline_original)
         self.due_var=tk.StringVar(value=self.deadline_original_text)
@@ -88,13 +95,13 @@ class DetailWindow:
             font=(FONT,-27),bg=BG,fg=ACCENT,insertbackground=ACCENT,bd=0,highlightthickness=0,width=22)
         self.due.pack(side='left',fill='x',expand=True)
         self.optional=tk.BooleanVar(value=bool(task['optional']) if task else False)  # metadata preserved, no extra UI
-        content=tk.Frame(win,bg=CARD); content.pack(fill='both',expand=True,padx=20,pady=(0,8))
+        content=tk.Frame(win,bg=CARD); self.content=content; content.pack(fill='both',expand=True,padx=20,pady=(0,8))
         self.note=tk.Text(content,font=(FONT,-30),wrap='word',bg=CARD,fg=INK,insertbackground=ACCENT,
             bd=0,highlightthickness=0,padx=16,pady=16,spacing1=3,spacing3=7,undo=True)
         scrollbar=tk.Scrollbar(content,command=self.note.yview,width=8,bd=0,highlightthickness=0)
         scrollbar.pack(side='right',fill='y'); self.note.pack(fill='both',expand=True)
         self.note.configure(yscrollcommand=scrollbar.set)
-        self.status=tk.Label(win,text='',font=(FONT,-13),bg=BG,fg=RED,
+        self.status=tk.Label(win,text='',font=(FONT,-16),bg=BG,fg=RED,
                              anchor='w',justify='left',wraplength=490)
         # Only validation/conflict errors are shown. No instructional/source footer.
         self.note.insert('1.0',task['note'] if task else '')
@@ -106,8 +113,8 @@ class DetailWindow:
         self.due_var.trace_add('write',lambda *_:self.changed())
         for text in (self.title,self.note):
             text.bind('<Tab>',lambda e:(e.widget.tk_focusNext().focus_set(),'break')[-1])
-        win.bind('<Control-s>',lambda e:self.save())
-        win.bind('<Control-Return>',lambda e:self.save())
+        win.bind('<Control-s>',lambda e:(self.manual_save(),'break')[-1])
+        win.bind('<Control-Return>',lambda e:(self.manual_save(),'break')[-1])
         win.bind('<Escape>',lambda e:self.close())
         win.protocol('WM_DELETE_WINDOW',self.close)
         win.bind('<FocusIn>',lambda e:self.refresh_clean(),add='+')
@@ -116,13 +123,27 @@ class DetailWindow:
 
     def show_error(self,text):
         self.status.configure(text=text,fg=RED)
-        self.status.pack(fill='x',padx=30,pady=(0,12))
+        self.status.pack(fill='x',padx=30,pady=(0,8),before=self.content)
+
+    def manual_save(self):
+        return self.save()
+
+    def toggle_pin(self):
+        value=not self.pinned
+        try:
+            if self.task: self.store.set_setting('detail_pinned:'+self.task['id'],value)
+            self.window.attributes('-topmost',value)
+            self.pinned=value; self.pin_button.set_active(value)
+        except (ValueError,OSError,sqlite3.Error,tk.TclError) as exc: self.show_error(str(exc))
 
     def primary_action(self):
-        return self.save() if self.task is None else self.toggle_complete()
+        # Unsaved edits mean SAVE, never accidentally mark a task completed.
+        try: changed=self.values()!=self.baseline
+        except ValueError: changed=True
+        return self.manual_save() if self.task is None or self.dirty or changed else self.toggle_complete()
 
     def update_action(self):
-        if self.task is None:
+        if self.task is None or self.dirty:
             self.complete_button.set_kind('save'); self.complete_button.set_active(False)
         else:
             latest=self.store.get(self.task['id'])
@@ -131,7 +152,7 @@ class DetailWindow:
 
     def values(self):
         due,label=(self.deadline_original if self.due_var.get().strip()==self.deadline_original_text
-                   else parse_deadline_text(self.due_var.get()))
+                   else parse_deadline_text(self.due_var.get(),self.deadline_original[0]))
         return {'title':self.title.get().strip(),
                 'due':due,'due_label':label,
                 'note':self.note.get('1.0','end-1c'),'optional':int(self.optional.get())}
@@ -143,6 +164,7 @@ class DetailWindow:
     def changed(self):
         if self.loading or self.closed: return
         self.dirty=True
+        self.update_action()
         self.status.pack_forget()
         if self.pending: self.window.after_cancel(self.pending)
         self.pending=None
@@ -162,6 +184,7 @@ class DetailWindow:
                 self.task=self.store.get(id)
                 self.app.details_windows.pop(self.key,None)
                 self.key=id; self.app.details_windows[id]=self
+                self.store.set_setting('detail_pinned:'+id,self.pinned)
             elif changes:
                 self.task=self.store.patch_fields(self.task['id'],changes,self.baseline)
             # Baseline tracks visible fields, not unseen concurrent edits.

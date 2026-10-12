@@ -111,7 +111,6 @@ class TodoWidget:
     def toggle_pin(self):
         self.pinned = not self.pinned
         self.root.attributes('-topmost',self.pinned)
-        for detail in self.details_windows.values(): detail.window.attributes('-topmost',self.pinned)
         self.update_pin()
         self.safe(lambda:self.store.set_setting('pinned',self.pinned))
 

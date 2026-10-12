@@ -193,6 +193,70 @@ class DetailTests(unittest.TestCase):
             self.assertEqual(int(self.root.tk.splitlist(widget.cget('font'))[1]),-pixels)
         self.assertEqual(a.title.winfo_class(),'Entry')
 
+    def test_icon_save_never_changes_completion_and_has_no_save_words(self):
+        self.store.mark('a',True)
+        a=self.open('a'); a.note.insert('end',' 保存测试'); self.root.update()
+        self.assertFalse(hasattr(a,'save_button'))
+        self.assertEqual(a.complete_button.kind,'save')
+        self.assertTrue(a.complete_button.invoke())
+        self.assertEqual(self.store.get('a')['note'],'原内容 保存测试')
+        self.assertTrue(self.store.get('a')['done'])
+        self.assertFalse(a.status.winfo_manager())
+
+    def test_primary_dirty_action_saves_not_completes(self):
+        a=self.open('a'); a.note.insert('end',' 草稿'); self.root.update()
+        self.assertEqual(a.complete_button.kind,'save')
+        a.complete_button.invoke()
+        self.assertEqual(self.store.get('a')['note'],'原内容 草稿')
+        self.assertFalse(self.store.get('a')['done'])
+
+    def test_friendly_deadline_input(self):
+        from todo_detail import parse_deadline_text
+        for text in ('10/13','10月13日','2030/10/13'):
+            self.assertEqual(parse_deadline_text(text,'2030-01-01'),('2030-10-13',''))
+        self.assertEqual(parse_deadline_text('10/13 9:00 上课前','2030-01-01'),
+                         ('2030-10-13T09:00','2030-10-13 09:00 上课前'))
+        self.assertEqual(parse_deadline_text('10月13日上课前','2030-01-01'),
+                         ('2030-10-13','2030-10-13 上课前'))
+        with self.assertRaises(ValueError): parse_deadline_text('2/30','2030-01-01')
+        a=self.open('a'); a.due_var.set('10/16 上课前'); a.manual_save()
+        self.assertEqual(self.store.get('a')['due'],'2026-10-16')
+
+    def test_compact_spacing_and_save_error_is_visible(self):
+        a=self.open('a'); a.window.deiconify(); self.root.update()
+        gap=a.due.winfo_rooty()-(a.title.winfo_rooty()+a.title.winfo_height())
+        self.assertLessEqual(gap,10)
+        a.due_var.set('星期八'); self.assertFalse(a.manual_save()); self.root.update()
+        self.assertEqual(a.status.winfo_manager(),'pack')
+        self.assertLess(a.status.winfo_y(),a.content.winfo_y())
+        self.assertEqual(self.store.get('a')['due'],'2026-10-13')
+        self.assertEqual(a.complete_button.kind,'save')
+
+    def test_detail_pins_independent_from_main_and_siblings(self):
+        a=self.open('a'); b=self.open('b')
+        self.assertFalse(a.pinned); self.assertFalse(b.pinned)
+        main=self.app.pinned
+        a.pin_button.invoke(); self.root.update()
+        self.assertTrue(a.pinned); self.assertTrue(bool(a.window.attributes('-topmost')))
+        self.assertFalse(b.pinned); self.assertEqual(self.app.pinned,main)
+        self.app.toggle_pin(); self.root.update()
+        self.assertTrue(a.pinned); self.assertFalse(b.pinned)
+        self.assertFalse(bool(b.window.attributes('-topmost')))
+        b.pin_button.invoke(); a.pin_button.invoke(); self.root.update()
+        self.assertFalse(a.pinned); self.assertTrue(b.pinned)
+        self.assertEqual(self.app.pinned,not main)
+
+    def test_detail_pin_persists_on_reopen_and_draft_save(self):
+        a=self.open('a'); a.toggle_pin(); a.close()
+        a=self.open('a'); self.assertTrue(a.pinned)
+        draft=self.app.editor(); draft.window.withdraw()
+        draft.pin_button.invoke(); draft.title.insert(0,'新事项'); self.root.update()
+        draft.complete_button.invoke()
+        id=draft.task['id']
+        self.assertTrue(self.store.setting('detail_pinned:'+id))
+        draft.close(); reopened=self.open(id)
+        self.assertTrue(reopened.pinned)
+
     def test_auto_save_timer(self):
         a=self.open('a'); a.note.insert('end',' 自动'); self.root.update()
         self.assertIsNotNone(a.pending)
