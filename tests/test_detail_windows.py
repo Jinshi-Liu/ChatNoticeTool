@@ -257,7 +257,7 @@ class DetailTests(unittest.TestCase):
         draft.close(); reopened=self.open(id)
         self.assertTrue(reopened.pinned)
 
-    def test_small_windows_are_usable_and_restore_large_fonts(self):
+    def test_small_windows_are_usable_and_never_shrink_fonts(self):
         a=self.open('a'); b=self.open('b')
         original=a.values()
         self.root.geometry('220x160+20+20'); self.root.deiconify()
@@ -274,7 +274,22 @@ class DetailTests(unittest.TestCase):
         self.assertGreater(a.note.winfo_height(),20)
         row=self.app.canvas.rows['a']
         self.assertLessEqual(max(self.app.canvas.coords(row['bg'])[::2]),self.app.canvas.winfo_width())
-        self.assertEqual(self.app.canvas.itemcget(row['preview'],'state'),'hidden')
+        self.assertEqual(self.app.canvas.itemcget(row['preview'],'state'),'normal')
+        for widget,pixels in ((a.title,38),(a.due,27),(a.note,30),(a.title.hint,38),(a.due.hint,27),(a.status,16)):
+            self.assertEqual(int(self.root.tk.splitlist(widget.cget('font'))[1]),-pixels)
+        for name,pixels in (('title',34),('meta',26),('preview',28)):
+            self.assertEqual(int(self.root.tk.splitlist(self.app.canvas.itemcget(row[name],'font'))[1]),-pixels)
+        for item,pixels in ((self.app.segment.left,32),(self.app.segment.right,32),
+                            (self.app.segment.left_count,16),(self.app.segment.right_count,16)):
+            self.assertEqual(int(self.root.tk.splitlist(self.app.segment.itemcget(item,'font'))[1]),-pixels)
+        self.app.segment.event_generate('<Button-1>',x=120,y=28); self.root.update()
+        self.assertTrue(self.app.view_done)
+        self.app.segment.event_generate('<Button-1>',x=20,y=28); self.root.update()
+        self.assertFalse(self.app.view_done)
+        row=self.app.canvas.rows['a']
+        self.store.upsert('小窗新行',id='c',note='字号不变'); self.app.render(); self.root.update()
+        new_row=self.app.canvas.rows['c']
+        self.assertEqual(int(self.root.tk.splitlist(self.app.canvas.itemcget(new_row['title'],'font'))[1]),-34)
         self.assertEqual(a.values(),original); self.assertFalse(a.dirty)
         self.root.geometry('500x700'); a.window.geometry('560x590'); self.root.update()
         self.assertFalse(self.app.compact); self.assertFalse(a.compact)
@@ -312,6 +327,45 @@ class DetailTests(unittest.TestCase):
         self.assertTrue(draft.complete_button.invoke())
         self.assertEqual(self.store.get(draft.task['id'])['note'],'保留正文')
         self.assertFalse(self.store.get(draft.task['id'])['done'])
+
+    def test_wheel_scrolls_headers_out_then_body_and_back(self):
+        a=self.open('a'); a.window.geometry('300x200+20+20'); a.window.deiconify()
+        a.note.insert('end','\n'+'\n'.join('正文复习第'+str(i)+'行' for i in range(60)))
+        self.root.update(); values=a.values(); original_y=a.title.winfo_rooty()
+        a.note.event_generate('<MouseWheel>',delta=-120); self.root.update()
+        self.assertLess(a.title.winfo_rooty(),original_y)
+        for _ in range(8): a.note.event_generate('<MouseWheel>',delta=-120)
+        self.root.update()
+        viewport=a.page_canvas.winfo_rooty()
+        for header in (a.top,a.date_row):
+            self.assertLessEqual(header.winfo_rooty()+header.winfo_height(),viewport)
+        self.assertGreater(a.note.yview()[0],0)
+        self.assertGreaterEqual(a.note.winfo_height(),a.page_canvas.winfo_height()-10)
+        self.assertEqual(a.values(),values)
+        self.assertEqual(int(self.root.tk.splitlist(a.note.cget('font'))[1]),-30)
+        for _ in range(14): a.note.event_generate('<MouseWheel>',delta=120)
+        self.root.update()
+        self.assertAlmostEqual(a.title.winfo_rooty(),original_y,delta=1)
+        self.assertAlmostEqual(a.note.yview()[0],0,delta=.001)
+
+    def test_short_page_can_hide_headers_without_editing(self):
+        a=self.open('a'); a.window.geometry('300x200+20+20'); a.window.deiconify(); self.root.update()
+        values=a.values()
+        a.scroll_page('moveto',1); self.root.update()
+        self.assertLessEqual(a.date_row.winfo_rooty()+a.date_row.winfo_height(),a.page_canvas.winfo_rooty())
+        self.assertEqual(a.values(),values); self.assertFalse(a.dirty)
+        a.scroll_page('moveto',0); self.root.update()
+        self.assertGreaterEqual(a.title.winfo_rooty(),a.page_canvas.winfo_rooty())
+        self.assertTrue(a.manual_save())
+        self.assertEqual(self.store.get('a')['note'],'原内容')
+
+    def test_scroll_position_is_independent_per_window(self):
+        a=self.open('a'); b=self.open('b')
+        for editor in (a,b): editor.window.geometry('300x200+20+20'); editor.window.deiconify()
+        self.root.update(); b_position=b.title.winfo_rooty()
+        a.scroll_page('moveto',1); self.root.update()
+        self.assertEqual(b.title.winfo_rooty(),b_position)
+        self.assertEqual(b.page_canvas.canvasy(0),0)
 
     def test_auto_save_timer(self):
         a=self.open('a'); a.note.insert('end',' 自动'); self.root.update()

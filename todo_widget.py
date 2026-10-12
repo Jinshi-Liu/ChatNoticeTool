@@ -115,6 +115,7 @@ class TodoWidget:
         self.header.pack_configure(padx=8 if value else 24,pady=(6,0) if value else (18,4))
         self.body.pack_configure(padx=(6,4) if value else (18,10))
         self.add_button.pack_configure(padx=(4,0) if value else (6,0))
+        self.segment.pack_configure(side='top' if value else 'left',anchor='w')
         self.segment.set_compact(value)
         for button in (self.add_button,self.pin_button): button.set_size(28 if value else 48)
         self.canvas.set_compact(value)

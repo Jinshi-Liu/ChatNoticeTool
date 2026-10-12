@@ -29,13 +29,11 @@ class SegmentedControl(tk.Canvas):
     def set_compact(self,value):
         if self.compact==value: return
         self.compact=value
-        self.configure(width=144 if value else 246,height=38 if value else 65)
-        for item,x,y in ((self.left,4,15 if value else 28),(self.right,76 if value else 127,15 if value else 28),
-                         (self.left_count,50 if value else 91,5 if value else 13),
-                         (self.right_count,123 if value else 214,5 if value else 13)):
+        self.configure(width=204 if value else 246,height=65)
+        for item,x,y in ((self.left,4,28),(self.right,108 if value else 127,28),
+                         (self.left_count,79 if value else 91,13),
+                         (self.right_count,181 if value else 214,13)):
             self.coords(item,x,y)
-        for item in (self.left,self.right): self.itemconfigure(item,font=(FONT,-16 if value else -32,'bold'))
-        for item in (self.left_count,self.right_count): self.itemconfigure(item,font=(FONT,-11 if value else -16,'bold'))
         state=self.state; self.state=None
         if state: self.update_state(*state)
 
@@ -43,9 +41,9 @@ class SegmentedControl(tk.Canvas):
         state=(pending,done,selected)
         if state==self.state: return
         self.state=state
-        x=(78 if selected else 6) if self.compact else (129 if selected else 6)
-        y=34 if self.compact else 58
-        self.coords(self.pill,x,y,x+(28 if self.compact else 52),y)
+        x=(110 if selected else 6) if self.compact else (129 if selected else 6)
+        y=58
+        self.coords(self.pill,x,y,x+52,y)
         self.itemconfigure(self.left,fill=MUTED if selected else INK)
         self.itemconfigure(self.right,fill=INK if selected else MUTED)
         self.itemconfigure(self.left_count,text=str(pending),fill=MUTED if selected else ACCENT)
@@ -88,9 +86,9 @@ class TaskCanvas(tk.Canvas):
         add('tick','line',0,0,1,1,2,2,fill='#B5B5BC',width=2.4,capstyle='round',joinstyle='round',state='normal')
         add('undo_curve','arc',0,0,1,1,start=-90,extent=245,style='arc',outline=ACCENT,width=2.4,state='hidden')
         add('undo_head','line',0,0,1,1,2,2,fill=ACCENT,width=2.4,capstyle='round',joinstyle='round',state='hidden')
-        add('title','text',0,0,anchor='nw',justify='left',font=(FONT,-18 if self.compact else -34,'bold'),fill=INK)
-        add('meta','text',0,0,anchor='nw',justify='left',font=(FONT,-14 if self.compact else -26),fill=ACCENT)
-        add('preview','text',0,0,anchor='nw',justify='left',font=(FONT,-16 if self.compact else -28),fill=MUTED)
+        add('title','text',0,0,anchor='nw',justify='left',font=(FONT,-34,'bold'),fill=INK)
+        add('meta','text',0,0,anchor='nw',justify='left',font=(FONT,-26),fill=ACCENT)
+        add('preview','text',0,0,anchor='nw',justify='left',font=(FONT,-28),fill=MUTED)
         add('menu_hit','rectangle',0,0,1,1,fill='',outline='')
         for name in ('trash_lid','trash_handle','trash_body','trash_left','trash_right'):
             add(name,'line',0,0,1,1,fill=MUTED,width=1.8,capstyle='round',joinstyle='round')
@@ -126,7 +124,7 @@ class TaskCanvas(tk.Canvas):
             data=(task['title'],bool(task['done']),meta,color,preview)
             if data!=row['data']:
                 self.itemconfigure(row['title'],text=task['title'],fill=MUTED if task['done'] else INK,
-                    font=(FONT,-18 if self.compact else -34,'overstrike' if task['done'] else 'bold'))
+                    font=(FONT,-34,'overstrike' if task['done'] else 'bold'))
                 self.itemconfigure(row['preview'],text=preview or '点击添加内容')
                 self.itemconfigure(row['meta'],text=meta,fill=color)
                 self.itemconfigure(row['tick'],state='hidden' if task['done'] else 'normal',fill='#85858F')
@@ -138,7 +136,7 @@ class TaskCanvas(tk.Canvas):
         if self.selected not in self.rows: self.selected=ids[0] if ids else None
         if not ids:
             if self.empty is None:
-                self.empty=self.create_text(0,0,anchor='n',font=(FONT,-16 if self.compact else -24),fill=MUTED)
+                self.empty=self.create_text(0,0,anchor='n',font=(FONT,-24),fill=MUTED)
             self.itemconfigure(self.empty,text=empty_text)
         elif self.empty is not None:
             self.delete(self.empty); self.empty=None
@@ -148,11 +146,6 @@ class TaskCanvas(tk.Canvas):
     def set_compact(self,value):
         if self.compact==value: return
         self.compact=value
-        for id,row in self.rows.items():
-            self.itemconfigure(row['title'],font=(FONT,-18 if value else -34,'overstrike' if self.tasks[id]['done'] else 'bold'))
-            self.itemconfigure(row['meta'],font=(FONT,-14 if value else -26))
-            self.itemconfigure(row['preview'],font=(FONT,-16 if value else -28),state='hidden' if value else 'normal')
-        if self.empty is not None: self.itemconfigure(self.empty,font=(FONT,-16 if value else -24))
         self.layout()
 
     def resize(self,event):
@@ -178,11 +171,11 @@ class TaskCanvas(tk.Canvas):
             meta_height=meta_bounds[3]-meta_bounds[1] if meta_bounds else 18
             preview_y=meta_y+meta_height+10
             self.coords(row['preview'],left,preview_y)
-            self.itemconfigure(row['preview'],state='hidden' if self.compact else 'normal')
+            self.itemconfigure(row['preview'],state='normal')
             self.itemconfigure(row['preview'],width=text_width)
             bounds=self.bbox(row['preview'])
             preview_height=bounds[3]-bounds[1] if bounds else 20
-            bottom=meta_y+meta_height+16 if self.compact else preview_y+preview_height+22
+            bottom=preview_y+preview_height+(16 if self.compact else 22)
             self.coords(row['bg'],*rounded_points(4,y,right,bottom,20))
             cx=right-(20 if self.compact else 30); cy=y+(22 if self.compact else 34)
             hit=16 if self.compact else 24
@@ -202,6 +195,8 @@ class TaskCanvas(tk.Canvas):
         if self.empty is not None:
             self.itemconfigure(self.empty,width=max(20,self.width-(24 if self.compact else 50)))
             self.coords(self.empty,self.width/2,24 if self.compact else 65)
+            bounds=self.bbox(self.empty)
+            if bounds: self.content_height=max(0,bounds[3]+8)
         self.extent=max(self.height,self.content_height,1)
         self.configure(scrollregion=(0,0,self.width,self.extent))
         self.scroll_pixels(0 if reset_scroll else old_top)
