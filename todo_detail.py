@@ -68,23 +68,32 @@ class DetailWindow:
         win.withdraw()  # Build once before mapping to avoid a blank-window flash.
         win.title(task['title'] if task else '新待办')
         # Deliberately no transient() or grab_set(): main and sibling windows remain usable.
-        win.configure(bg=BG); win.minsize(490,430)
+        win.configure(bg=BG); win.minsize(220,160)
+        self.compact=False
         offset=len(app.details_windows)%6*28
         x=max(10,min(app.root.winfo_x()-570+offset,win.winfo_screenwidth()-590))
         y=max(10,min(app.root.winfo_y()+40+offset,win.winfo_screenheight()-640))
-        win.geometry(f'560x590+{x}+{y}')
+        width,height=560,590
+        saved=self.store.setting('detail_geometry:'+task['id']) if task else None
+        match=re.fullmatch(r'(\d+)x(\d+)([+-]\d+)([+-]\d+)',saved) if isinstance(saved,str) else None
+        if match:
+            width,height,sx,sy=map(int,match.groups())
+            width=min(max(220,width),win.winfo_screenwidth())
+            height=min(max(160,height),win.winfo_screenheight())
+            x=max(0,min(sx,win.winfo_screenwidth()-width)); y=max(0,min(sy,win.winfo_screenheight()-height))
+        win.geometry(f'{width}x{height}+{x}+{y}')
         self.pinned=bool(self.store.setting('detail_pinned:'+task['id'],False)) if task else False
         win.attributes('-topmost',self.pinned)
         icon=Path(__file__).resolve().parent/'todo.ico'
         if icon.exists(): win.iconbitmap(str(icon))
-        top=tk.Frame(win,bg=BG); top.pack(fill='x',padx=26,pady=(18,4))
+        top=tk.Frame(win,bg=BG); self.top=top; top.pack(fill='x',padx=26,pady=(18,4))
         self.complete_button=IconButton(top,'save' if task is None else ('undo' if task['done'] else 'check'),self.primary_action)
         self.complete_button.pack(side='right',anchor='n',padx=(14,0))
         self.title_var=tk.StringVar(value=task['title'] if task else '')
         self.title=HintEntry(top,textvariable=self.title_var,hint='输入标题',width=1,font=(FONT,-38,'bold'),bg=BG,fg=INK,
             insertbackground=ACCENT,bd=0,highlightthickness=0)
         self.title.pack(side='left',fill='x',expand=True,ipady=1)
-        date_row=tk.Frame(win,bg=BG); date_row.pack(fill='x',padx=30,pady=(0,10))
+        date_row=tk.Frame(win,bg=BG); self.date_row=date_row; date_row.pack(fill='x',padx=30,pady=(0,10))
         self.pin_button=IconButton(date_row,'pin',self.toggle_pin)
         self.pin_button.pack(side='right',padx=(8,0))
         self.pin_button.set_active(self.pinned)
@@ -118,8 +127,28 @@ class DetailWindow:
         win.bind('<Escape>',lambda e:self.close())
         win.protocol('WM_DELETE_WINDOW',self.close)
         win.bind('<FocusIn>',lambda e:self.refresh_clean(),add='+')
+        win.bind('<Configure>',self.resize_layout,add='+')
         self.loading=False
         if not task: self.title.focus_set()
+
+    def resize_layout(self,event):
+        if event.widget!=self.window or event.width<220 or event.height<160: return
+        self.status.configure(wraplength=max(100,event.width-24))
+        value=event.width<450 or event.height<330
+        if value==self.compact: return
+        self.compact=value
+        self.top.pack_configure(padx=10 if value else 26,pady=(6,2) if value else (18,4))
+        self.date_row.pack_configure(padx=12 if value else 30,pady=(0,4) if value else (0,10))
+        self.content.pack_configure(padx=8 if value else 20,pady=(0,4) if value else (0,8))
+        self.title.configure(font=(FONT,-20 if value else -38,'bold'))
+        self.due.configure(font=(FONT,-16 if value else -27))
+        self.title.hint.configure(font=(FONT,-20 if value else -38,'bold'))
+        self.due.hint.configure(font=(FONT,-16 if value else -27))
+        self.note.configure(font=(FONT,-16 if value else -30),padx=8 if value else 16,pady=8 if value else 16,
+                            spacing1=1 if value else 3,spacing3=4 if value else 7)
+        self.status.configure(font=(FONT,-12 if value else -16))
+        self.complete_button.pack_configure(padx=(4,0) if value else (14,0))
+        for button in (self.complete_button,self.pin_button): button.set_size(28 if value else 48)
 
     def show_error(self,text):
         self.status.configure(text=text,fg=RED)
@@ -222,9 +251,13 @@ class DetailWindow:
         if self.save(): return True
         return messagebox.askyesno('保留修改？','这条修改还没有保存。是否放弃当前窗口的修改？\n选择“否”返回继续编辑。',parent=self.window)
 
-    def close(self,force=False):
+    def close(self,force=False,save_geometry=None):
         if self.closed: return True
         if not force and not self.prepare_close(): return False
+        save_geometry=not force if save_geometry is None else save_geometry
+        if self.task and save_geometry:
+            try: self.store.set_setting('detail_geometry:'+self.task['id'],self.window.geometry())
+            except (ValueError,OSError,sqlite3.Error): pass  # Preference only, never discard a saved note.
         self.closed=True
         if self.pending: self.window.after_cancel(self.pending); self.pending=None
         self.app.details_windows.pop(self.key,None)

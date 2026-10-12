@@ -257,6 +257,62 @@ class DetailTests(unittest.TestCase):
         draft.close(); reopened=self.open(id)
         self.assertTrue(reopened.pinned)
 
+    def test_small_windows_are_usable_and_restore_large_fonts(self):
+        a=self.open('a'); b=self.open('b')
+        original=a.values()
+        self.root.geometry('220x160+20+20'); self.root.deiconify()
+        a.window.geometry('220x160+260+20'); a.window.deiconify()
+        b.window.deiconify(); self.root.update()
+        self.assertEqual(self.root.minsize(),(220,160))
+        self.assertEqual(a.window.minsize(),(220,160))
+        self.assertTrue(self.app.compact); self.assertTrue(a.compact); self.assertFalse(b.compact)
+        for button in (self.app.add_button,self.app.pin_button,a.complete_button,a.pin_button):
+            self.assertTrue(button.winfo_viewable())
+            self.assertEqual(button.size,28)
+        for button in (self.app.add_button,self.app.pin_button):
+            self.assertLessEqual(button.winfo_rootx()+button.winfo_width(),self.root.winfo_rootx()+self.root.winfo_width())
+        self.assertGreater(a.note.winfo_height(),20)
+        row=self.app.canvas.rows['a']
+        self.assertLessEqual(max(self.app.canvas.coords(row['bg'])[::2]),self.app.canvas.winfo_width())
+        self.assertEqual(self.app.canvas.itemcget(row['preview'],'state'),'hidden')
+        self.assertEqual(a.values(),original); self.assertFalse(a.dirty)
+        self.root.geometry('500x700'); a.window.geometry('560x590'); self.root.update()
+        self.assertFalse(self.app.compact); self.assertFalse(a.compact)
+        self.assertEqual(a.complete_button.size,48)
+        self.assertEqual(int(self.root.tk.splitlist(a.note.cget('font'))[1]),-30)
+        self.assertEqual(self.app.canvas.itemcget(row['preview'],'state'),'normal')
+
+    def test_small_detail_size_remembered_per_task(self):
+        a=self.open('a'); a.window.geometry('220x160+20+20'); a.window.deiconify(); self.root.update()
+        a.close()
+        a=self.open('a'); a.window.deiconify(); self.root.update()
+        self.assertEqual((a.window.winfo_width(),a.window.winfo_height()),(220,160))
+        self.assertTrue(a.compact)
+        b=self.open('b'); b.window.deiconify(); self.root.update()
+        self.assertFalse(b.compact)
+
+    def test_main_close_remembers_open_detail_sizes(self):
+        a=self.open('a'); a.window.geometry('220x160+20+20'); a.window.deiconify(); self.root.update()
+        self.app.close()
+        self.assertTrue(self.store.setting('detail_geometry:a').startswith('220x160'))
+        self.assertEqual(self.store.get('a')['note'],'原内容')
+
+    def test_small_saved_main_geometry_is_not_expanded(self):
+        import tkinter as tk
+        self.app.close()
+        self.store.set_setting('geometry','220x160+20+20')
+        self.root=tk.Tk(); self.app=TodoWidget(self.root,self.store); self.root.update()
+        self.assertEqual((self.root.winfo_width(),self.root.winfo_height()),(220,160))
+        self.assertTrue(self.app.compact)
+
+    def test_plus_draft_saves_in_small_window(self):
+        draft=self.app.editor(); draft.window.geometry('220x160+20+20'); draft.window.deiconify(); self.root.update()
+        self.assertTrue(draft.compact)
+        draft.title.insert(0,'小窗草稿'); draft.note.insert('end','保留正文'); self.root.update()
+        self.assertTrue(draft.complete_button.invoke())
+        self.assertEqual(self.store.get(draft.task['id'])['note'],'保留正文')
+        self.assertFalse(self.store.get(draft.task['id'])['done'])
+
     def test_auto_save_timer(self):
         a=self.open('a'); a.note.insert('end',' 自动'); self.root.update()
         self.assertIsNotNone(a.pending)

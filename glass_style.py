@@ -30,6 +30,9 @@ class IconButton(tk.Canvas):
     def invoke(self): return self.command()
     def set_active(self,value):
         self.active=bool(value); self.paint()
+    def set_size(self,size):
+        if self.size!=size:
+            self.size=size; self.configure(width=size,height=size); self.paint()
     def set_kind(self,kind):
         if self.kind!=kind:
             self.kind=kind; self.paint()

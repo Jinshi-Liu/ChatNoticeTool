@@ -52,9 +52,10 @@ class TodoWidget:
         self.active_menu = None
         self.summary_state = None
         self.details_windows = {}
+        self.compact=False
         root.title(TITLE)
         root.configure(bg=BG)
-        root.minsize(440, 390)
+        root.minsize(220, 160)
         width, height = 500, min(700, root.winfo_screenheight()-110)
         x, y = max(0,root.winfo_screenwidth()-width-35), 45
         saved = store.setting('geometry')
@@ -62,9 +63,9 @@ class TodoWidget:
             match = re.fullmatch(r'(\d+)x(\d+)\+(\d+)\+(\d+)',saved)
             if match:
                 sw,sh,sx,sy = map(int,match.groups())
-                if 350 <= sw <= root.winfo_screenwidth() and 390 <= sh <= root.winfo_screenheight() and sx < root.winfo_screenwidth()-80 and sy < root.winfo_screenheight()-80:
+                if 220 <= sw <= root.winfo_screenwidth() and 160 <= sh <= root.winfo_screenheight() and sx < root.winfo_screenwidth()-80 and sy < root.winfo_screenheight()-80:
                     width,height,x,y = sw,sh,sx,sy
-        width=max(440,width)
+        width=max(220,width)
         x=min(x,max(0,root.winfo_screenwidth()-width-12))
         root.geometry(f'{width}x{height}+{x}+{y}')
         self.pinned = bool(store.setting('pinned', True))
@@ -76,7 +77,7 @@ class TodoWidget:
         root.protocol('WM_DELETE_WINDOW',self.close)
         root.bind('<Control-n>',lambda event:self.editor())
 
-        header = tk.Frame(root,bg=BG)
+        header = tk.Frame(root,bg=BG); self.header=header
         header.pack(fill='x',padx=24,pady=(18,4))
         self.segment = SegmentedControl(header,self.switch)
         self.segment.pack(side='left')
@@ -87,7 +88,7 @@ class TodoWidget:
         self.update_pin()
         self.subtitle = tk.Label(root,text='',font=(FONT,-14),fg=MUTED,bg=BG,anchor='w')  # intentionally hidden
 
-        body = tk.Frame(root,bg=BG)
+        body = tk.Frame(root,bg=BG); self.body=body
         body.pack(fill='both',expand=True,padx=(18,10))
         self.canvas = TaskCanvas(body,on_toggle=self.toggle_id,on_detail=self.detail_id,
                                  on_menu=self.menu_id,badge=deadline_badge)
@@ -104,6 +105,19 @@ class TodoWidget:
         # No permanent footer/help text; save failures still use explicit dialogs.
         self.render()
         self.poll_id = root.after(1800,self.poll)
+        root.bind('<Configure>',self.resize_layout,add='+')
+
+    def resize_layout(self,event):
+        if event.widget!=self.root or event.width<220 or event.height<160: return
+        value=event.width<420 or event.height<300
+        if value==self.compact: return
+        self.compact=value
+        self.header.pack_configure(padx=8 if value else 24,pady=(6,0) if value else (18,4))
+        self.body.pack_configure(padx=(6,4) if value else (18,10))
+        self.add_button.pack_configure(padx=(4,0) if value else (6,0))
+        self.segment.set_compact(value)
+        for button in (self.add_button,self.pin_button): button.set_size(28 if value else 48)
+        self.canvas.set_compact(value)
 
     def update_pin(self):
         self.pin_button.set_active(self.pinned)
@@ -229,7 +243,7 @@ class TodoWidget:
         if save_geometry:
             for detail in editors:
                 if not detail.prepare_close(): return
-        for detail in editors: detail.close(force=True)
+        for detail in editors: detail.close(force=True,save_geometry=save_geometry)
         if save_geometry and self.store.path.exists():
             try:
                 self.store.set_setting('geometry',self.root.geometry())
