@@ -4,6 +4,10 @@
 
 On-demand local QQ / WeChat group-message export and a standalone desktop todo widget. No automatic collection, message sending, or built-in cloud AI.
 
+**当前版本：[v0.2.0 实验性源码版](https://github.com/Jinshi-Liu/ChatNoticeTool/releases/tag/v0.2.0)** · [变更记录](CHANGELOG.md) · [项目结构](ARCHITECTURE.md) · [安全说明](SECURITY.md)
+
+此版包含按范围读取/显式历史复用工具，以及当前待办界面：大字号不随缩放改变、标题区可随正文滚走、独立置顶/尺寸、顶部四控件对齐。发布包只含源码，没有安装器、个人任务或聊天资料。
+
 > 实验性工具，不是腾讯官方接口。仅用于本人账号、本人有权处理的本地记录。只读内存扫描必须得到账号使用者的明确授权；不承诺支持所有客户端版本，不建议直接在唯一的数据副本上试验。
 
 ## 能做什么
@@ -54,6 +58,16 @@ py -3.13 -m venv .venv
 `local_setup.py` 只创建私有的 `config.json` 和清理所有权标记，不覆盖已有配置、待办或进度。它不会扫描内存，也不会创建桌面快捷方式、服务或开机启动项。
 
 可以使用自己已有的 Python 代替 `py`，但建议仍创建独立环境。若缺少 Tkinter，安装带 Tcl/Tk 的官方 Windows Python。
+
+### 升级已有安装
+
+1. 正常关闭主窗口及全部详情，先处理未保存草稿。
+2. 将自己的 `config.json`、`state/` 和需要保留的 `exports/` 复制到自己的备份位置；这些文件不得上传。
+3. 在原目录更新源码。Git安装可运行 `git pull --ff-only`；ZIP安装只覆盖源码/文档，不覆盖或删除私有目录和所有权标记。若有自己的源码修改，先保存或合并，不强制重置。
+4. 使用原项目环境；读聊天的用户按 `requirements.txt` 更新项目内依赖，只用待办的用户仍无须第三方依赖。
+5. 重开组件。任务、完成/移除状态和窗口偏好仍在原 `state/todos.sqlite3`，本版本不迁移数据库位置。
+
+**不要运行 `cleanup.py ... --apply` 来升级**：它会删除进度/导出等资料。初始化不会覆盖既有配置或任务；如果移动了整个目录导致标记路径不匹配，先核对路径和备份，不绕过所有权检查。
 
 ## 二、只使用桌面待办
 
@@ -240,6 +254,8 @@ py -3.13 -m venv .venv
 ```
 
 Windows上的测试覆盖页面认证、WAL、群 / 时间限制、安全清理、持久化、并发编辑、单行标题、图标与高DPI布局。CI仅使用合成数据，不连接真实客户端；没有正式跨版本兼容承诺。
+
+完整分层、数据流与私有目录说明见 [ARCHITECTURE.md](ARCHITECTURE.md)；版本差异见 [CHANGELOG.md](CHANGELOG.md)。
 
 主要文件：
 

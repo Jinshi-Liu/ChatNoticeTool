@@ -14,7 +14,7 @@ OWNER_ID = 'chatnoticetool-owned-v1'
 OWNED = frozenset({".chatnotice-owned.json", "README.md", "config.json", "chatnotice.py",
     "cleanup.py", "run.cmd", "cleanup.cmd", "tests", "research", "state", "exports",
     "runtime", "vendor", "__pycache__", "cipher.py", "memory_reader.py", "database_reader.py", "groups.py", "messages.py", "read_chats.py", "attachments.py", "document_formats.py", "widget_ui.py", "glass_style.py", "todo_detail.py", "todo_store.py", "todo_widget.py", "todo-widget.cmd", "todo.ico", "initial-todos.json", "local_setup.py", "config.example.json", "requirements.txt",
-    ".gitignore", ".gitattributes", "SECURITY.md", "CONTRIBUTING.md", "NOTICE.md", "LICENSE", ".github"})
+    ".gitignore", ".gitattributes", "SECURITY.md", "CONTRIBUTING.md", "NOTICE.md", "LICENSE", "CHANGELOG.md", "ARCHITECTURE.md", ".github"})
 RUNTIME = frozenset({"state", "exports", "runtime", "__pycache__"})
 
 

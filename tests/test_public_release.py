@@ -44,6 +44,23 @@ class PublicReleaseTests(unittest.TestCase):
         self.assertEqual(marker['root'],str(root)); self.assertEqual(marker['external_changes'],[])
         self.assertTrue(cleanup.plan_cleanup(root,'runtime'))
 
+    def test_current_release_documents_owned_and_unknown_files_preserved(self):
+        docs={'CHANGELOG.md','ARCHITECTURE.md'}
+        self.assertTrue(docs<=cleanup.OWNED)
+        for name in docs: self.assertTrue((ROOT/name).is_file())
+        for name in ('README.md','CHANGELOG.md'):
+            self.assertIn('v0.2.0',(ROOT/name).read_text(encoding='utf-8'))
+        root=self.base/'upgrade'; root.mkdir()
+        (root/'config.example.json').write_bytes((ROOT/'config.example.json').read_bytes())
+        local_setup.initialize(root)
+        for name in docs: (root/name).write_text('synthetic release document')
+        personal=root/'user-notes.txt'; personal.write_text('keep')
+        targets={p.name for p in cleanup.plan_cleanup(root,'all')}
+        self.assertTrue(docs<=targets); self.assertNotIn(personal.name,targets)
+        marker=json.loads((root/'.chatnotice-owned.json').read_text())
+        self.assertTrue(docs<=set(marker['owned_top_level']))
+        self.assertEqual(personal.read_text(),'keep')
+
     def test_setup_rejects_other_owner(self):
         root=self.base/'clone'; root.mkdir()
         (root/'.chatnotice-owned.json').write_text('{}')
