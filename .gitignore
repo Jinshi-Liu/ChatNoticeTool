@@ -1,6 +1,8 @@
 # Private local configuration and ownership
 /config.json
 /.chatnotice-owned.json
+# Legacy private locator from older copied Skills; preserve this ignore on upgrade
+/skills/chatnotice/.local/
 # Never publish messages, keys, progress, snapshots or third-party research
 /state/
 /exports/

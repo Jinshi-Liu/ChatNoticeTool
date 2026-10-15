@@ -1,14 +1,15 @@
 # 项目结构与运行边界
 
-## 三条独立入口
+## 独立入口
 
 | 使用场景 | 入口 | 是否读取聊天 |
 | --- | --- | --- |
 | 只用桌面待办 | `todo-widget.cmd` / `todo_widget.py` | 否，只轮询自己的待办SQLite |
 | 脚本管理任务 | `todo_store.py` | 否，只操作自己的待办SQLite |
 | 按需读消息 | `read_chats.py` / `chatnotice.py export` | 是，要求准确群、明确时间和逐次确认 |
+| 外部Agent + 项目规则 | `AGENTS.md` / `agent_cli.py` / `docs/agent/` | 按保存的授权读取客户端，或仅处理用户显式导入的文件 |
 
-消息导出不会自动触发AI分析或添加任务。内存取钥另有入口与逐次授权，普通消息读取不会自行启动扫描。
+消息导出不会自动触发AI分析或添加任务。支持项目规则的Agent自动加载根目录`AGENTS.md`，详细说明按需读取，组件不内置或调用模型。内存取钥要求逐次授权，普通读取不会自行启动扫描；只有新Agent入口接受已保存的消息读取授权，旧入口保持逐次确认。
 
 ## 数据路径
 
@@ -44,7 +45,36 @@
 | 主窗口 | `todo_widget.py`, `widget_ui.py` | 持续复用列表行、滚动、主窗口工具栏、轮询自己的任务库 |
 | 详情/绘制 | `todo_detail.py`, `glass_style.py`, `todo.ico` | 无模态编辑、统一纵向滚动、图标、独立置顶与窗口几何 |
 | 生命周期 | `local_setup.py`, `cleanup.py`, `*.cmd` | 不覆盖配置的初始化、所有权限定清理和本地启动 |
-| 验证 | `tests/`, `.github/workflows/tests.yml` | 合成数据单元测试和Windows CI，不接触真实客户端 |
+| 验证 | `tests/`, `.github/workflows/tests.yml` | 合成数据单元测试、Windows完整CI及三系统导入CI，不接触真实客户端 |
+
+## Agent 快速处理路径
+
+```text
+AGENTS.md → agent_locator.py定位组件/项目Python → agent_cli.py read
+  → 校验当前群授权 → 按来源账号合批，每个所需数据库只快照一次
+  → 新/变化消息与未完成项 → 处理库持久接收 → 有界分页
+  → 按需attachments prepare（有效缓存不重复转换）
+  → 外部Agent读图/分析 → todos apply批量幂等操作
+  → processing commit批量登记阶段与待办关联
+```
+
+`agent_config.py`负责版本化配置、原子写入和群范围；`agent_sources.py`显式注册来源工厂，封装QQ/微信能力及有界候选发现；`agent_imports.py`提供不依赖Windows API的文件收件箱；`agent_processing.py`负责消息版本、获取游标、可恢复批次、分页和关联；`agent_assets.py`负责当前授权下的资源准备和缓存；`agent_service.py`为命令门面，`agent_cli.py`输出版本化JSON。
+
+`messages.read_selected`支持同一平台不同群窗口共享快照，Agent路径不重复生成旧入口的完整导出或原始行封存；不落盘原始数据库行。处理库明文保存选定消息，正常退出仍保留，必须按私有资料管理。
+
+获取游标只代表消息已持久接收，不代表已分析。默认重叠24小时（小窗口时缩短）并按账号命名空间、消息身份与内容哈希去重；未完成项继续返回。两个SQLite库不提供跨库原子事务：待办操作ID与结果同事务记录，通过幂等重放恢复“写待办后、提交进度前”的中断。
+
+批次分页、分块、提交、附件缓存复用都会重新校验当前授权及配置版本内容。改规则或撤权使旧批次失效；不自动重分析已完成历史，显式`--reprocess`才重跑指定范围。时间窗口不能保证发现任意晚到历史消息，可显式回补。
+
+常规调用不执行doctor/取钥/列群，也不预处理所有附件。超大消息明确提供内容分块引用，不静默截断。可选的`state/component-location.json`仅保存项目和Python位置，不保存账号或凭据。规则入口保持简短，不把全部命令文档塞进每次会话。
+
+## 通用导入与适配器
+
+`agent_cli.py import`只接收明确选择的文件及已授权本地分组。JSON、UTF-8文本、图片和文档不要求真实来源/发言者/原始时间；缺失原时间标记timestamp_basis:imported，禁止据此伪造原始发送时间。有来源说明可直接写待办正文，不新增必填来源或追溯功能。
+
+数据先存`state/imports/<命名空间哈希>/messages.sqlite3`及assets，再直接持久登记处理批次，包括旧时间的修订；不推进未经扫描的获取游标。两个库之间中断可通过同文件、稳定ID重试恢复。默认read直接消费已登记的导入队列，不补扫多年空历史；显式--since才扫描已导入库。附件复制/失败可能留下私有孤立资源，归state备份/清理，不自动删除。
+
+AgentConfig、AgentService和附件准备统一通过get_source分派。旧客户端ReadScope不承担新平台校验，新来源实现validate_scope及资源权限。注册仅来自受信代码，不从消息或配置加载模块；JSONL范例在`examples/adapters/`，完整接口见[扩展指引](docs/agent/extending.md)。这不是大型插件系统，也不代表已接入其他厂商或系统的聊天客户端。
 
 ## 待办持久化与编辑
 
@@ -62,7 +92,7 @@
 | --- | --- |
 | Python源码、启动器、示例配置、空初始任务、图标、合成测试、许可证和文档 | `config.json`, `.chatnotice-owned.json`, `state/`, `exports/`, `runtime/`, `.venv/`及密钥/数据库/个人材料 |
 
-`state/`含任务进度、偏好和可能的密钥缓存；`exports/`含私有聊天及附件。`.gitignore`只是防误提交，不是数据加密或访问控制。不要把实际导出放入Issue、CI或Release附件。
+`state/`含导入消息/附件、处理与任务进度、偏好和可能的密钥缓存；`exports/`含私有聊天及附件。`.gitignore`只是防误提交，不是数据加密或访问控制。不要把实际导出放入Issue、CI或Release附件。
 
 ## 更新与卸载
 

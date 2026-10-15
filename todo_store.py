@@ -3,6 +3,7 @@ Assistant updates use stable IDs and preserve completed/removed status.
 """
 from __future__ import annotations
 import argparse
+import hashlib
 from contextlib import contextmanager
 from datetime import datetime
 import json
@@ -112,6 +113,133 @@ class TodoStore:
         with self.connection() as db:
             return [dict(r) for r in db.execute('SELECT * FROM tasks' + where +
                 ' ORDER BY done, due IS NULL, due, created_at, id', args)]
+
+    def page(self, offset: int = 0, limit: int = 50, include_removed: bool = False) -> dict:
+        if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 200:
+            raise ValueError('offset须非负，limit须在1到200之间')
+        clause = '' if include_removed else ' WHERE removed=0'
+        with self.connection() as db:
+            total = db.execute('SELECT COUNT(*) FROM tasks' + clause).fetchone()[0]
+            rows = db.execute('SELECT * FROM tasks' + clause +
+                              ' ORDER BY done,due IS NULL,due,created_at,id LIMIT ? OFFSET ?', (limit, offset))
+            items, size = [], 0
+            for row in rows:
+                item = dict(row)
+                length = len(json.dumps(item, ensure_ascii=False).encode('utf-8'))
+                if items and size + length > 32 * 1024:
+                    break
+                items.append(item)
+                size += length
+        end = offset + len(items)
+        return {'tasks': items, 'total': total, 'next_offset': end if end < total else None}
+
+    def apply_batch(self, operations: list[dict]) -> list[dict]:
+        """One transaction, per-item conflicts, durable idempotency across crashes.
+
+        New additive metadata leaves the version-1 widget schema compatible.
+        Existing upsert/GUI semantics are unchanged; this is the Agent interface.
+        """
+        if not isinstance(operations, list) or not 1 <= len(operations) <= 200:
+            raise ValueError('operations必须包含1到200项')
+        results = []
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            db.execute('''CREATE TABLE IF NOT EXISTS agent_operations (
+                operation_id TEXT PRIMARY KEY, request_hash TEXT NOT NULL, result_json TEXT NOT NULL)''')
+            for operation in operations:
+                opid = operation.get('operation_id') if isinstance(operation, dict) else None
+                db.execute('SAVEPOINT agent_item')
+                try:
+                    if not isinstance(opid, str) or not opid or len(opid) > 200:
+                        raise ValueError('operation_id不能为空，最多200字')
+                    encoded = json.dumps(operation, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+                    request_hash = hashlib.sha256(encoded.encode('utf-8')).hexdigest()
+                    previous = db.execute('SELECT * FROM agent_operations WHERE operation_id=?', (opid,)).fetchone()
+                    if previous:
+                        if previous['request_hash'] != request_hash:
+                            raise ValueError('operation_id已用于不同内容；请为新操作选择新ID')
+                        result = json.loads(previous['result_json'])
+                        result['replayed'] = True
+                    else:
+                        result = self._agent_operation(db, operation)
+                        result.update(operation_id=opid, ok=True, replayed=False)
+                        db.execute('INSERT INTO agent_operations VALUES(?,?,?)',
+                                   (opid, request_hash, json.dumps(result, ensure_ascii=False)))
+                    db.execute('RELEASE agent_item')
+                    results.append(result)
+                except (ValueError, TypeError, KeyError) as exc:
+                    db.execute('ROLLBACK TO agent_item')
+                    db.execute('RELEASE agent_item')
+                    task_id = operation.get('id') if isinstance(operation, dict) else None
+                    current = db.execute('SELECT * FROM tasks WHERE id=?', (task_id,)).fetchone() if isinstance(task_id, str) else None
+                    results.append({'operation_id': opid, 'ok': False, 'error': str(exc),
+                                    'current_id': current['id'] if current else None,
+                                    'next_action': 'todos get --id <current_id>' if current else None})
+        return results
+
+    def _agent_operation(self, db, operation):
+        action = operation.get('action')
+        if set(operation) - {'operation_id', 'action', 'id', 'fields', 'baseline', 'value', 'message_keys'}:
+            raise ValueError('未知的待办操作字段')
+        task_id = operation.get('id') or 'agent:' + hashlib.sha256(operation['operation_id'].encode()).hexdigest()[:32]
+        if not isinstance(task_id, str) or not task_id or len(task_id) > 300:
+            raise ValueError('待办ID无效')
+        fields = operation.get('fields', {})
+        baseline = operation.get('baseline', {})
+        if not isinstance(fields, dict) or not isinstance(baseline, dict):
+            raise ValueError('fields和baseline必须是对象')
+        allowed = {'title', 'due', 'due_label', 'note', 'source', 'optional'}
+        if set(fields) - allowed:
+            raise ValueError('不允许的待办字段；状态修改须显式使用mark/remove')
+        fields = dict(fields)
+        for key, maximum in (('title', 300), ('note', 12000), ('source', 1000), ('due_label', 100)):
+            if key in fields and (not isinstance(fields[key], str) or len(fields[key]) > maximum):
+                raise ValueError(key + '类型或长度无效')
+        if 'title' in fields:
+            fields['title'] = fields['title'].strip()
+            if not fields['title']:
+                raise ValueError('标题不能为空')
+        if 'due' in fields:
+            if fields['due'] is not None and not isinstance(fields['due'], str):
+                raise ValueError('due必须是日期字符串或null')
+            fields['due'] = normalize_due(fields['due'])
+        if 'optional' in fields:
+            if type(fields['optional']) is not bool:
+                raise ValueError('optional必须是布尔值')
+            fields['optional'] = int(fields['optional'])
+        row = db.execute('SELECT * FROM tasks WHERE id=?', (task_id,)).fetchone()
+        now = datetime.now().isoformat(timespec='microseconds')
+        if action == 'create':
+            if row:
+                raise ValueError('ID已存在（含已移除项）；请查询后显式修改，不覆盖或复活')
+            if not fields.get('title'):
+                raise ValueError('新待办必须有标题')
+            record = {'due': None, 'due_label': '', 'note': '', 'source': '', 'optional': 0, **fields}
+            db.execute('INSERT INTO tasks(id,title,due,due_label,note,source,optional,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)',
+                       (task_id, record['title'], record['due'], record['due_label'], record['note'], record['source'], record['optional'], now, now))
+        elif action == 'patch':
+            if row is None or row['removed']:
+                raise ValueError('待办不存在或已移除')
+            for key, value in fields.items():
+                if key not in baseline or (row[key] != baseline[key] and row[key] != value):
+                    raise ValueError('字段已变化或缺少baseline，未覆盖：' + key)
+            if fields:
+                assignments = ','.join(key + '=?' for key in fields)
+                db.execute('UPDATE tasks SET ' + assignments + ',updated_at=? WHERE id=?', (*fields.values(), now, task_id))
+        elif action in ('mark', 'remove'):
+            if fields:
+                raise ValueError('状态操作不能附带字段修改，请另用patch')
+            key = 'done' if action == 'mark' else 'removed'
+            value = operation.get('value')
+            if row is None or type(value) is not bool or key not in baseline or row[key] != baseline[key]:
+                raise ValueError('状态已变化、待办不存在或缺少布尔value/baseline')
+            if action == 'mark':
+                db.execute('UPDATE tasks SET done=?,done_at=?,updated_at=? WHERE id=?', (int(value), now if value else None, now, task_id))
+            else:
+                db.execute('UPDATE tasks SET removed=?,updated_at=? WHERE id=?', (int(value), now, task_id))
+        else:
+            raise ValueError('action必须是create/patch/mark/remove')
+        return {'id': task_id, 'action': action}
 
     def get(self, id: str) -> dict:
         with self.connection() as db:

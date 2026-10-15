@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 import re
 import sqlite3
+import time
 
 from chatnotice import LOCAL_TZ, ReadScope, project_path, save_json
 from database_reader import open_database
@@ -239,30 +240,51 @@ def selected_wechat(connection: sqlite3.Connection, scope: ReadScope, shard: str
     return rows
 
 
-def export_request(config: dict, request: dict) -> dict:
+def read_selected(config: dict, request: dict, *, keep_raw: bool = False) -> dict:
+    """Read bounded scopes, sharing each snapshot even when group windows differ.
+
+    The Agent path consumes this in memory instead of exporting/sealing the same
+    overlap on every run. Only the legacy export path requests original rows.
+    """
     if not request.get('confirmed'):
         raise PermissionError('Group selection not confirmed')
-    scopes={s['platform']:ReadScope(s['platform'],tuple(s['group_ids']),s['since'],s['until']) for s in request['scopes']}
+    scopes = [ReadScope(s['platform'], tuple(s['group_ids']), s['since'], s['until'])
+              for s in request['scopes']]
     groups={(g['platform'],g['group_id']):g['name'] for g in request['groups']}
-    if set(groups) != {(p,g) for p,s in scopes.items() for g in s.group_ids}:
+    selected_groups = [(s.platform, g) for s in scopes for g in s.group_ids]
+    if len(set(selected_groups)) != len(selected_groups) or set(groups) != set(selected_groups):
         raise ValueError('Selected group metadata and scopes do not match exactly')
     raw=[]
     snapshots=[]
-    if 'qq' in scopes:
+    snapshot_seconds = query_seconds = 0.0
+    qq_scopes = [s for s in scopes if s.platform == 'qq']
+    wx_scopes = [s for s in scopes if s.platform == 'wechat']
+    if qq_scopes:
+        clock = time.monotonic()
         with open_database(config,'qq','nt_msg.db') as (connection,meta):
-            raw += [dict(r,platform='qq') for r in selected_qq(connection,scopes['qq'])]
+            snapshot_seconds += time.monotonic() - clock
+            clock = time.monotonic()
+            for scope in qq_scopes:
+                raw += [dict(r,platform='qq') for r in selected_qq(connection,scope)]
+            query_seconds += time.monotonic() - clock
             snapshots.append(dict(meta,platform='qq'))
-    if 'wechat' in scopes:
+    if wx_scopes:
         dbroot=Path(config['wechat']['database_dir'])
         shards=sorted((dbroot/'message').glob('message_[0-9]*.db'))
         if not shards:
             raise RuntimeError('No WeChat message shards found')
         for path in shards:
             relative=str(path.relative_to(dbroot))
+            clock = time.monotonic()
             with open_database(config,'wechat',relative) as (connection,meta):
-                raw += [dict(r,platform='wechat') for r in selected_wechat(connection,scopes['wechat'],relative)]
+                snapshot_seconds += time.monotonic() - clock
+                clock = time.monotonic()
+                for scope in wx_scopes:
+                    raw += [dict(r,platform='wechat') for r in selected_wechat(connection,scope,relative)]
+                query_seconds += time.monotonic() - clock
                 snapshots.append(dict(meta,platform='wechat'))
     raw.sort(key=lambda r:(r['timestamp'],r['platform'],r['group_id'],str(r['message_id'])))
+    decode_started = time.monotonic()
     readable=[]
     errors=[]
     for row in raw:
@@ -278,6 +300,7 @@ def export_request(config: dict, request: dict) -> dict:
                 message.update(qq_decode(row['payload'] or b''))
                 message['type']='qq_type_'+str(row['message_type'])
             else:
+                message['server_id'] = row.get('server_id')
                 text,status=wechat_decode(row['payload'])
                 if not text and row.get('compressed_payload'):
                     text,status=wechat_decode(row['compressed_payload'])
@@ -292,13 +315,26 @@ def export_request(config: dict, request: dict) -> dict:
                            attachment_content_status='unknown')
             errors.append({'source_id':identity,'error':str(exc)})
         readable.append(message)
+    report = {'request': request, 'message_count': len(readable), 'messages': readable,
+              'snapshots': snapshots, 'parse_errors': errors, 'local_records_only': True,
+              'all_attachment_contents_processed': False,
+              'timings': {'snapshot_decrypt_seconds': round(snapshot_seconds, 4),
+                          'query_seconds': round(query_seconds, 4),
+                          'decode_seconds': round(time.monotonic() - decode_started, 4)}}
+    if keep_raw:
+        report['_raw'] = raw
+    return report
+
+
+def export_request(config: dict, request: dict) -> dict:
+    report = read_selected(config, request, keep_raw=True)
+    raw = report.pop('_raw')
+    readable, errors = report['messages'], report['parse_errors']
     batch=datetime.now(LOCAL_TZ).strftime('%Y%m%d-%H%M%S-%f')
     output=project_path('exports/'+batch)
     output.mkdir(parents=True,exist_ok=False)
     sealed=protect_secret(json.dumps(json_safe(raw),ensure_ascii=False).encode('utf-8'))
     (output/'raw-selected.dpapi').write_bytes(sealed)
-    report={'request':request,'message_count':len(readable),'messages':readable,'snapshots':snapshots,
-            'parse_errors':errors,'local_records_only':True,'all_attachment_contents_processed':False}
     save_json(f'exports/{batch}/messages.json',report)
     counts=Counter((m['platform'],m['group_id']) for m in readable)
     status=Counter(m['body_status'] for m in readable)

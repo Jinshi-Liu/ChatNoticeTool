@@ -5,6 +5,19 @@ on:
 permissions:
   contents: read
 jobs:
+  portable-import:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Portable import and adapter tests (standard library only)
+        run: python -B -X utf8 -m unittest discover -s tests -p test_imports.py -q
   windows:
     runs-on: windows-latest
     steps:

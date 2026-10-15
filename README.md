@@ -1,37 +1,88 @@
 # ChatNoticeTool
 
-**Windows 本地群消息按需导出 + 可独立使用的桌面待办组件。**
+**本地消息/文件整理组件：Windows QQ / 微信读取 + 通用文件导入 + 独立桌面待办。**
 
-On-demand local QQ / WeChat group-message export and a standalone desktop todo widget. No automatic collection, message sending, or built-in cloud AI.
+Local QQ / WeChat export, portable file import, and a standalone desktop todo widget for your existing AI agent. No automatic collection, message sending, or built-in cloud AI.
 
-**当前版本：[v0.2.0 实验性源码版](https://github.com/Jinshi-Liu/ChatNoticeTool/releases/tag/v0.2.0)** · [变更记录](CHANGELOG.md) · [项目结构](ARCHITECTURE.md) · [安全说明](SECURITY.md)
+**最近已发布：[v0.2.0 实验性源码版](https://github.com/Jinshi-Liu/ChatNoticeTool/releases/tag/v0.2.0)** · [变更记录](CHANGELOG.md) · [项目结构](ARCHITECTURE.md) · [安全说明](SECURITY.md)
 
-此版包含按范围读取/显式历史复用工具，以及当前待办界面：大字号不随缩放改变、标题区可随正文滚走、独立置顶/尺寸、顶部四控件对齐。发布包只含源码，没有安装器、个人任务或聊天资料。
+**main分支新增：外部Agent统一接口、项目规则、通用文件导入和适配器范例。**这些新增功能尚未单独打标签发布；需要使用时请下载main源码或克隆仓库，不要误用旧v0.2.0发布包。
+
+既有按范围读取/显式历史复用、桌面待办继续保留；升级不覆盖个人配置、任务和完成状态。项目只提供源码，没有安装器、个人任务或聊天资料。
 
 > 实验性工具，不是腾讯官方接口。仅用于本人账号、本人有权处理的本地记录。只读内存扫描必须得到账号使用者的明确授权；不承诺支持所有客户端版本，不建议直接在唯一的数据副本上试验。
 
 ## 能做什么
 
 - 按准确群ID和明确时间范围导出本机已有的 QQ / 微信消息，保留未知类型和解析缺口。
+- 通用导入JSON、UTF-8文本、图片和文档，复用增量分析与待办流程；不要求真实来源信息，有说明直接写待办正文。
 - 从已登录客户端进行有界、只读的密钥扫描；验证后用 Windows DPAPI 缓存，绝不打印明文密钥。
 - 在临时副本上解密，校验数据库页面、WAL提交边界和 SQLite 一致性；正常关闭后删除临时数据库。
 - 处理部分本地图片、PDF、DOC / DOCX、XLSX、文本和 ZIP；不自动下载附件、不执行文档中的脚本或宏。
 - 独立待办组件：新增、直接编辑、完成 / 撤回、移除、置顶、多个详情窗口、自动保存、进度持久化。
 - 外部脚本通过稳定ID新增或更新待办，保留已有完成 / 移除状态。
 
-**尚未提供：** 自动AI提取待办、云端历史拉取、实时监控、自动发送、完整语音 / 视频 / 转发解析、通用一键安装器。导出消息不会自动生成待办；你可以自己整理，或者明确选择把特定内容交给AI助手分析。
+**尚未提供：** 内置AI模型、云端历史拉取、实时监控、自动发送、完整语音 / 视频 / 转发解析、通用一键安装器。导出消息不会自动生成待办；可以自己整理，或通过下述项目规则让已有 Agent 在授权范围内分析并管理待办。
 
 ## 环境与兼容性
 
 | 项目 | 状态 |
 | --- | --- |
-| 操作系统 | Windows x64；密钥扫描和DPAPI依赖 Windows |
-| Python | 推荐 Python 3.13 x64（已验证 3.13.11），需要 Tkinter |
+| 客户端读取与桌面界面 | 现有支持 Windows x64；密钥扫描和DPAPI依赖 Windows |
+| 文件导入与处理核心 | 标准库实现，不依赖Windows API；配置Windows/macOS/Linux合成CI，不代表其他系统已能读取QQ/微信 |
+| Python | 推荐 Python 3.13 x64（已验证 3.13.11）；桌面界面需Tkinter，文件导入不需要 |
 | QQ | 已验证 9.9.21.38711；其他版本不保证 |
 | 微信 | 已验证 4.1.15.13；其他版本不保证 |
 | FFmpeg | 可选；WXGF / HEVC 图片需要本机 `ffmpeg` 可执行文件在 PATH 中 |
 
 单元测试使用合成数据，不含真实账号、密钥或聊天附件。测试通过不代表你的客户端或所有消息类型都兼容。
+
+## 推荐：组件 + 项目规则，让现有 Agent 带着配置
+
+根目录 [`AGENTS.md`](AGENTS.md) 是简短规则入口，详细说明在 [`docs/agent/`](docs/agent/configuration.md)，工具入口是 `agent_cli.py`。**不需要安装Skill，不是软件内置AI，也不接第二个模型。**Agent负责理解通知、使用自己的读图能力、判断如何管理待办；组件负责群范围、读取、幂等写入和处理进度。[通用文件导入](docs/agent/importing.md)提供不依赖Windows API的本地接入，也有可运行的JSONL适配器范例；现有内置聊天读取器依赖 Windows QQ / 微信，不代表已接入钉钉。需要新来源或系统时，Agent可按[扩展指引](docs/agent/extending.md)补充可复用工具。
+
+读取Windows客户端时先完成下文环境安装。仅做文件导入和处理记账时，Python 3.13标准库即可，不需Tkinter、第三方包或客户端取钥。在项目目录启动支持 `AGENTS.md` 的Agent即可自动加载规则。以pi为例（替换成自己的目录）：
+
+```text
+cd D:/path/to/ChatNoticeTool
+pi
+```
+
+然后说：
+
+> 帮我配置微信的课程群。图片结合文字整理，首次看最近三天，以后整理新通知。
+
+Agent会定位组件、确认本人账号路径、必要时请求单次取钥授权、查找群并展示规则/交付范围，确认后保存。日后说“整理新通知”即可，不必再手工找群ID、解释每个脚本或重新扫描内存。
+
+- **对话配置**：准确区分平台、来源账号、群ID；同名群先选候选，支持每群自然语言说明。
+- **通用导入**：也可说“整理这个JSON/文本/图片文件”，由Agent配置本地收件箱并导入；无须虚构账号、来源或原始时间。
+- **快速增量**：多群合批，已处理且不变的消息不再交给AI；同一批次分页不重读数据库。
+- **按需看图**：只准备所选消息的本地附件，复用有效资源；Agent自己读图，缺失/不支持的内容保留待处理。
+- **结果可恢复**：稳定操作ID防重复，字段基线防覆盖用户编辑；读取成功不等于全部分析成功。
+- **授权可撤销**：正文、图片、文档交付分别确认。常规调用使用已保存授权，不重复确认同一范围；取钥、扩权、破坏性清理仍需另行确认。不后台运行。
+
+已配置后的无附件常规流程是 `read → todos apply（有变更时）→ processing commit`，不每轮运行doctor、列群或取钥。首次检查也可直接调用：
+
+```powershell
+.\.venv\Scripts\python.exe -B -X utf8 agent_cli.py inspect
+```
+
+规则自动发现取决于Agent宿主和工作目录，不是全电脑自动发现。在其他项目调用时，明确告诉Agent本组件的位置并让它读取 `<组件>/AGENTS.md`。`agent_locator.py` 可定位项目Python，`--remember` 仅保存私有位置记录。连接配置、请求格式与故障处理见[配置指南](docs/agent/configuration.md)、[命令参考](docs/agent/commands.md)。不自动修改Agent全局设置。
+
+`state/agent-config.json`、`state/imports/`、`state/processing.sqlite3`、`state/todos.sqlite3`、`exports/agent-assets/` 和 `state/component-location.json` 均为私有数据。**处理库持久保存选定消息明文**，不是只缓存密钥；不要公开、上传或压缩分享。外部云端Agent会接收获授权内容，组件自身无网络上传不代表内容不离开本机。新功能经合成测试，真实客户端版本和Agent端到端使用仍需自行验证。
+
+### 与原版相比，改变了什么
+
+| 原有使用方式 | main新增能力 |
+| --- | --- |
+| 手工指定账号/群/时间并导出 | 对话确认并保存授权，Agent按需增量读取 |
+| 每轮自行整理导出文件 | 持久记录未完成处理，分页、去重和中断续跑 |
+| 主要读取Windows QQ/微信 | 增加明确选定的JSON、文本、图片和文档导入 |
+| 脚本通过稳定ID写待办 | 增加批量操作幂等记录、字段基线检查，保留用户完成/移除状态 |
+
+新版本不自动替你决定哪些通知要变成待办，也不要求补齐未知来源；判断由当前Agent完成。它更适合Agent工作流，但代码与状态管理也更复杂。合成测试不等于真实客户端端到端验证；跨平台CI只验证文件导入核心，不宣称macOS/Linux聊天读取或固定性能提升。完整命令见[命令参考](docs/agent/commands.md)，接入其他文件格式见[可运行JSONL范例](examples/adapters/jsonl_adapter.py)。
+
+旧版手动配置与命令继续可用，下面保留原有完整流程。
 
 ## 一、安装与初始化
 

@@ -205,7 +205,7 @@ def safe_zip_extract(path: Path, target: Path) -> list[Path]:
     return output
 
 
-def collect(report: dict,config: dict,output: Path,wx_pid: int) -> dict:
+def collect(report: dict,config: dict,output: Path,wx_pid: int, *, persist: bool = True) -> dict:
     selected=report['messages']
     items=[]
     qq_value=config.get('qq',{}).get('media_dir','')
@@ -214,7 +214,7 @@ def collect(report: dict,config: dict,output: Path,wx_pid: int) -> dict:
     hashes={a.get('md5','').lower() for m in selected if m['platform']=='qq' for a in m['attachments'] if a.get('md5')}
     qq_files={}
     for directory in ('Pic','File','Emoji'):
-        if qq_root is None: continue
+        if qq_root is None or not hashes: continue
         root=qq_root/directory
         if not root.exists(): continue
         for base,_,names in os.walk(root):
@@ -245,7 +245,13 @@ def collect(report: dict,config: dict,output: Path,wx_pid: int) -> dict:
             start=message['text'].find('<?xml')
             if start<0: start=message['text'].find('<msg>')
             if start<0: continue
-            xml=ET.fromstring(message['text'][start:])
+            try:
+                xml=ET.fromstring(message['text'][start:])
+            except ET.ParseError:
+                items.append({'source_id': message['source_id'], 'platform': 'wechat',
+                              'group_name': message['group_name'], 'filename': '',
+                              'candidates': [], 'discovery_error': 'malformed_message_xml'})
+                continue
             if message['type']=='image':
                 image=xml.find('img')
                 if image is None: continue
@@ -282,6 +288,9 @@ def collect(report: dict,config: dict,output: Path,wx_pid: int) -> dict:
     asset_root=output/'attachments'; asset_root.mkdir(exist_ok=True)
     for n,item in enumerate(items,1):
         item['asset_number']=n
+        if item.get('discovery_error'):
+            item['status']='processing_pending'
+            continue
         candidates=[Path(p) for p in item['candidates'] if allowed_local_source(Path(p),config)]
         # Prefer originals/compressed originals over thumbnails.
         candidates.sort(key=lambda p:('_t.dat' in p.name or 'Thumb' in p.parts,-p.stat().st_size))
@@ -336,7 +345,8 @@ def collect(report: dict,config: dict,output: Path,wx_pid: int) -> dict:
                 item['status']='processing_pending'; item['error']=str(exc)
     result={'items':items,'status_counts':dict(Counter(i['status'] for i in items)),
             'remote_downloads':False,'image_key_printed':False}
-    save_json(str((output/'attachments-manifest.json').relative_to(Path(__file__).resolve().parent)),result)
+    if persist:
+        save_json(str((output/'attachments-manifest.json').relative_to(Path(__file__).resolve().parent)),result)
     return result
 
 
