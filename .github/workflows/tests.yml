@@ -18,6 +18,8 @@ jobs:
           python-version: '3.13'
       - name: Portable import and adapter tests (standard library only)
         run: python -B -X utf8 -m unittest discover -s tests -p test_imports.py -q
+      - name: CLI process, stdin, image and revocation smoke tests (standard library only)
+        run: python -B -X utf8 -m unittest discover -s tests -p test_cli_process.py -q
   windows:
     runs-on: windows-latest
     steps:

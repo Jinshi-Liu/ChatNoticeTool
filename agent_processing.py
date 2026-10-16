@@ -10,14 +10,19 @@ import uuid
 
 from agent_config import AgentConfig, AgentError, digest, encode, private_path, text
 from chatnotice import ROOT
+from wechat_content import compact_message, describe
 
 APP_ID = 0x434E4131
 OVERLAP = 24 * 60 * 60
 PAGE_BYTES = 32 * 1024
 INLINE_BYTES = 12000
+MAX_TASK_LINKS = 100
 
 
 def has_media(message):
+    info = describe(message)
+    if info is not None:
+        return info['media']
     return bool(message.get('attachments') or message.get('local_media_hashes') or
                 message.get('attachment_content_status', 'not_applicable') != 'not_applicable')
 
@@ -43,11 +48,16 @@ class ProcessingStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as db:
             app = db.execute('PRAGMA application_id').fetchone()[0]
-            tables = db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-            if app not in (0, APP_ID) or (app == 0 and tables):
+            objects = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type IN ('table','index')")}
+            if app not in (0, APP_ID) or (app == 0 and objects):
                 raise AgentError('unknown_database', '该数据库不属于Agent处理状态，拒绝修改')
-            if db.execute('PRAGMA user_version').fetchone()[0] > 1:
+            version = db.execute('PRAGMA user_version').fetchone()[0]
+            if version > 1:
                 raise AgentError('state_version', '处理状态版本较新，拒绝降级写入')
+            expected = {'messages', 'messages_group_time', 'progress', 'batches', 'batch_messages',
+                        'batch_context', 'links', 'preparations', 'assets'}
+            if app == APP_ID and version == 1 and expected <= objects:
+                return  # Verify identity/version/schema without rewriting headers.
             db.execute(f'PRAGMA application_id={APP_ID}')
             db.execute('PRAGMA user_version=1')
             db.executescript('''
@@ -105,6 +115,11 @@ class ProcessingStore:
                 upper = min(end, group['until']) if group['until'] is not None else end
                 if until is not None and group['until'] is not None and until > group['until']:
                     raise AgentError('scope_denied', '结束时刻超出授权范围')
+                initial_recent = observed is None and since is None and start < upper - group['max_days'] * 86400
+                if initial_recent:
+                    # An authorization floor is not a request to scan decades.
+                    # Explicit --since retains oldest-first historical backfill.
+                    start = upper - group['max_days'] * 86400
                 # When catching up a long gap, do not spend the entire allowed
                 # window rereading overlap: reserve room for forward progress.
                 if observed and since is None:
@@ -113,7 +128,8 @@ class ProcessingStore:
                 stop = min(upper, start + group['max_days'] * 86400)
                 result.append({'group_key': group['key'], 'source_id': group['source_id'],
                                'group_id': group['group_id'], 'since': start, 'until': stop,
-                               'target_until': upper, 'more_history': stop < upper})
+                               'target_until': upper, 'more_history': stop < upper,
+                               **({'history_available_before': start} if initial_recent else {})})
         return result
 
     def record_read(self, groups, sources, windows, reports, historical=False, reprocess=False, advance_progress=True):
@@ -150,7 +166,8 @@ class ProcessingStore:
                     previous = db.execute('SELECT observed_until FROM progress WHERE group_key=?', (window['group_key'],)).fetchone()
                     covered = previous[0] if previous else rules[window['group_key']]['since']
                     # Explicit backfill must not jump an unacquired gap.
-                    if window['since'] <= covered < window['until']:
+                    if (window['since'] <= covered < window['until'] or
+                            (previous is None and 'history_available_before' in window)):
                         db.execute('INSERT INTO progress VALUES(?,?) ON CONFLICT(group_key) DO UPDATE SET observed_until=excluded.observed_until',
                                    (window['group_key'], window['until']))
             db.execute('INSERT INTO batches VALUES(?,?,?,?,?,?)',
@@ -204,6 +221,38 @@ class ProcessingStore:
             records.append(record)
         return batch, records
 
+    def resource_message(self, db, batch, record):
+        """Resolve image quotes only from already acquired, same-group scope."""
+        message = record['message']
+        info = describe(message)
+        if not info or info.get('kind') != 'quote' or info.get('media_kind') != 'image':
+            return message
+        rule = batch['rules'][record['group_key']]
+        source = batch['sources'][rule['source_id']]
+        identity = info['reference']['server_id']
+        if identity and identity != '0':
+            key = message_key(source, {'server_id': identity, 'group_id': message['group_id']})
+            upper = min(message['timestamp'], (rule['until'] - 1) if rule['until'] is not None else message['timestamp'])
+            parent = db.execute('SELECT payload FROM messages WHERE message_key=? AND group_key=? AND timestamp>=? AND timestamp<=?',
+                                (key, record['group_key'], rule['since'], upper)).fetchone()
+            if parent:
+                image = json.loads(parent['payload'])
+                if image.get('type') == 'image':
+                    return {**image, 'source_id': message['source_id']}
+        if info.get('resource_text'):
+            return {**message, 'type': 'image', 'text': info['resource_text']}
+        return message
+
+    @staticmethod
+    def view(message, batch_id, key):
+        value = compact_message(message)
+        if value is not message:
+            value = {**value, 'raw_ref': {'batch_id': batch_id, 'message_key': key,
+                                         'use': 'read --batch B --message KEY --raw'}}
+        if has_media(message):
+            value = {**value, 'attachment_ref': {'batch_id': batch_id, 'message_key': key}}
+        return value
+
     def page(self, batch_id, cursor=0, limit=50):
         if type(cursor) is not int or cursor < 0 or type(limit) is not int or not 1 <= limit <= 200:
             raise AgentError('invalid_input', 'cursor须非负，limit须在1到200之间')
@@ -222,9 +271,9 @@ class ProcessingStore:
                 message = json.loads(row['payload'])
                 item = {'message_key': row['message_key'], 'content_hash': row['content_hash'],
                         'group_key': row['group_key'], 'text_state': row['text_state'],
-                        'attachment_state': row['attachment_state'], 'analysis_state': row['analysis_state'],
+                        'attachment_state': row['attachment_state'] if has_media(message) else 'not_applicable', 'analysis_state': row['analysis_state'],
                         'reason': row['reason'], 'changed_since_batch': row['current_hash'] != row['content_hash'],
-                        'message': message}
+                        'message': self.view(message, batch_id, row['message_key'])}
                 linked = db.execute('SELECT task_id FROM links WHERE message_key=?', (row['message_key'],)).fetchall()
                 item['task_ids'] = [r[0] for r in linked]
                 length = len(encode(item).encode('utf-8'))
@@ -259,7 +308,7 @@ class ProcessingStore:
                         continue
                     value = json.loads(neighbor['payload'])
                     context_item = {'message_key': neighbor['message_key'], 'group_key': group_key,
-                                    'read_only_context': True, 'message': value}
+                                    'read_only_context': True, 'message': self.view(value, batch_id, neighbor['message_key'])}
                     length = len(encode(context_item).encode('utf-8'))
                     if length > 4000:
                         context_item.pop('message')
@@ -278,11 +327,13 @@ class ProcessingStore:
                       'more_history': any(w['more_history'] for w in batch['windows']),
                       'all_attachment_contents_processed': False,
                       'next_actions': ['processing commit'] if items else []}
+            if any('history_available_before' in w for w in batch['windows']):
+                result['history_notice'] = '首次默认读取最近一个max_days窗口；较早授权历史尚未扫描，可用显式--since回补，不代表不存在旧消息'
             if batch['historical']:
                 result['cache_notice'] = '历史快照，不是最新同步；本批次未推进客户端获取游标'
             return result
 
-    def chunk(self, batch_id, key, offset=0, chars=8000):
+    def chunk(self, batch_id, key, offset=0, chars=8000, *, raw=False):
         if type(offset) is not int or offset < 0 or type(chars) is not int or not 1 <= chars <= 10000:
             raise AgentError('invalid_input', 'offset须非负，chars须在1到10000之间')
         with self.connection() as db:
@@ -292,10 +343,11 @@ class ProcessingStore:
             if context:
                 if context['content_hash'] != context['current_hash']:
                     raise AgentError('message_changed', '上下文已变化，请重新读取')
-                value = context['payload']
+                message = json.loads(context['payload'])
             else:
                 _, records = self.records(db, batch_id, [key])
-                value = encode(records[0]['message'])
+                message = records[0]['message']
+            value = encode(message if raw else self.view(message, batch_id, key))
             chunk = value[offset:offset + chars]
             return {'message_key': key, 'format': 'json', 'content': chunk, 'total_chars': len(value),
                     'next_offset': offset + len(chunk) if offset + len(chunk) < len(value) else None}
@@ -314,15 +366,22 @@ class ProcessingStore:
             db.executemany('UPDATE messages SET attachment_state=? WHERE message_key=?',
                            [('prepared' if prepared else 'pending', key) for key, _, prepared in rows])
 
-    def commit(self, payload, task_exists):
+    def commit(self, payload, task_exists, *, validate_only=False):
         if not isinstance(payload, dict):
             raise AgentError('invalid_input', '提交必须是对象')
         results = payload.get('results')
-        if not isinstance(results, list) or not 1 <= len(results) <= 200:
+        if not isinstance(results, list) or not 1 <= len(results) <= 200 or any(not isinstance(r, dict) for r in results):
             raise AgentError('invalid_input', 'results必须包含1到200项')
         batch_id = text(payload.get('batch_id'), 'batch_id', 100)
+        # Scope this memo to one validation/commit, not to the service lifetime:
+        # final commit must check existence again after the todo transaction.
+        checked_tasks = {}
+        def exists(task_id):
+            if task_id not in checked_tasks:
+                checked_tasks[task_id] = task_exists(task_id)
+            return checked_tasks[task_id]
         with self.connection() as db:
-            db.execute('BEGIN IMMEDIATE')
+            db.execute('BEGIN' if validate_only else 'BEGIN IMMEDIATE')
             _, records = self.records(db, batch_id, [r.get('message_key') for r in results])
             for result, row in zip(results, records):
                 if result.get('content_hash') != row['content_hash']:
@@ -352,8 +411,10 @@ class ProcessingStore:
                 if row['processed_hash'] == row['content_hash'] and status == 'pending':
                     continue
                 task_ids = result.get('task_ids', [])
-                if not isinstance(task_ids, list) or len(task_ids) > 100 or any(not isinstance(t, str) or not task_exists(t) for t in task_ids):
+                if not isinstance(task_ids, list) or len(task_ids) > MAX_TASK_LINKS or any(not isinstance(t, str) or not exists(t) for t in task_ids):
                     raise AgentError('task_not_found', '关联待办必须已成功写入')
+                if validate_only:
+                    continue
                 for task_id in task_ids:
                     db.execute('INSERT OR IGNORE INTO links VALUES(?,?)', (row['message_key'], task_id))
                 db.execute('''UPDATE messages SET processed_hash=?,text_state=?,attachment_state=?,analysis_state=?,reason=?

@@ -157,7 +157,10 @@ def open_database(config: dict, platform: str, relative: str):
     with tempfile.TemporaryDirectory(dir=runtime) as directory:
         encrypted = Path(directory) / "source.db"
         plain = Path(directory) / "plain.db"
+        clock = time.monotonic()
         metadata = capture_stable(source, encrypted)
+        phases = {'capture_seconds': round(time.monotonic() - clock, 4)}
+        clock = time.monotonic()
         prefix = 1024 if platform == "qq" else 0
         with encrypted.open("rb") as handle:
             handle.seek(prefix)
@@ -168,10 +171,16 @@ def open_database(config: dict, platform: str, relative: str):
             keys = cipher.derive_qq_raw_keys(raw_key, first)
         else:
             keys = cipher.derive_qq_keys(raw_key, first)
+        phases['derive_keys_seconds'] = round(time.monotonic() - clock, 4)
+        clock = time.monotonic()
         metadata["main_pages"] = decode_main(encrypted, plain, keys, prefix)
+        phases['main_decrypt_seconds'] = round(time.monotonic() - clock, 4)
+        clock = time.monotonic()
         wal = Path(str(encrypted) + "-wal")
         metadata.update(replay_wal(wal, plain, keys) if wal.exists() else
                         {"wal_committed_frames": 0, "wal_ignored_tail": False})
+        phases['wal_replay_seconds'] = round(time.monotonic() - clock, 4)
+        metadata['timings'] = phases
         # A standalone WAL-replayed copy needs rollback journal mode, not shared WAL state.
         # This changes the COPY only, never the original client database.
         with plain.open("r+b") as output:
@@ -182,7 +191,9 @@ def open_database(config: dict, platform: str, relative: str):
         connection.row_factory = sqlite3.Row
         connection.text_factory = lambda b: b.decode("utf-8", errors="replace")
         try:
+            clock = time.monotonic()
             result = connection.execute("PRAGMA quick_check").fetchall()
+            phases['sqlite_check_seconds'] = round(time.monotonic() - clock, 4)
             if len(result) != 1 or result[0][0] != "ok":
                 raise ValueError("Decoded snapshot failed SQLite consistency check")
             metadata["sqlite_quick_check"] = "ok"

@@ -419,6 +419,60 @@ class ImportTests(unittest.TestCase):
         with self.assertRaises(AgentError):
             get_source('unregistered')
 
+    def test_basic_read_file_and_write_text_need_no_extra_calls(self):
+        file = self.incoming / 'notice.txt'
+        file.write_text('合成通知：正文无原始来源', encoding='utf-8')
+        page = self.service.read(group_keys=[self.group['key']], file=str(file), confirmed=True)
+        message = page['messages'][0]
+        result = self.service.write({'batch_id': page['batch_id'], 'results': [
+            {'message_key': message['message_key'], 'content_hash': message['content_hash'], 'status': 'done'}]})
+        self.assertFalse(result['has_failures'])
+        self.assertEqual(self.service.read()['messages'], [])
+
+    def test_basic_read_image_and_write_are_standard_library_only(self):
+        file = self.incoming / 'picture.png'
+        file.write_bytes(PNG)
+        with patch.dict(sys.modules, {'attachments': None, 'memory_reader': None, 'PIL': None, 'cryptography': None}):
+            page = self.service.read(group_keys=[self.group['key']], file=str(file), confirmed=True)
+            self.assertEqual(page['attachments'][0]['status'], 'prepared')
+            message = page['messages'][0]
+            result = self.service.write({'batch_id': page['batch_id'], 'operations': [{
+                'operation_id': 'portable-image', 'action': 'create', 'message_keys': [message['message_key']],
+                'fields': {'title': '合成图片事项'}}], 'results': [
+                    {'message_key': message['message_key'], 'content_hash': message['content_hash'], 'status': 'done'}]})
+        self.assertTrue(result['operations'][0]['ok'])
+        self.assertEqual(len(result['results'][0]['task_ids']), 1)
+
+    def test_basic_read_file_requires_selection_confirmation(self):
+        file = self.json_file([{'text': '合成通知'}])
+        with patch.object(ImportSource, 'ingest') as ingest:
+            with self.assertRaises(AgentError):
+                self.service.read(group_keys=[self.group['key']], file=str(file))
+        ingest.assert_not_called()
+
+    def test_basic_read_write_standalone_todos_and_removed_ids(self):
+        result = self.service.write({'operations': [
+            {'operation_id': str(i), 'action': 'create', 'fields': {'title': f'合成待办{i}'}} for i in range(2)]})
+        ids = [r['id'] for r in result['operations']]
+        self.service.todo_store().mark(ids[1], True)
+        self.service.todo_store().remove(ids[1])
+        self.assertEqual(self.service.read(todos=True)['total'], 1)
+        selected = self.service.read(ids=ids)['tasks']
+        self.assertEqual(len(selected), 2)
+        removed = next(r for r in selected if r['id'] == ids[1])
+        self.assertEqual((removed['done'], removed['removed']), (1, 1))
+        self.assertEqual(self.service.read(todos=True, limit=1, include_removed=True)['next_cursor'], 1)
+
+    def test_cli_basic_read_supports_file_and_todo_modes(self):
+        file = self.json_file([{'text': '合成通知'}])
+        output = io.StringIO()
+        with patch('sys.stdout', output):
+            code = agent_cli.main(['read', '--file', str(file), '--group', self.group['key'], '--confirm'], service=self.service)
+        self.assertEqual(code, 0, output.getvalue())
+        self.assertEqual(json.loads(output.getvalue())['data']['counts']['created'], 1)
+        with patch('sys.stdout', io.StringIO()):
+            self.assertEqual(agent_cli.main(['read', '--todos'], service=self.service), 0)
+
     def test_portable_pipeline_imports_no_client_or_image_packages(self):
         result = subprocess.run([sys.executable, '-B', '-X', 'utf8', '-c',
                                  "import agent_cli,sys; assert not any(n in sys.modules for n in ('cryptography','memory_reader','attachments','PIL')); print('stdlib-only')"],

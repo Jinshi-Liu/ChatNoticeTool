@@ -31,7 +31,7 @@ pi
 
 ## 通用导入来源
 
-用户只提供文件、不需要读取客户端时，配置`platform:"import"`，可选`collection:"inbox"`、name，不提供客户端paths。collection和后续group_id只是本地收件箱标识，不要求真实账号/群/原始来源。先配置授权分组，再`import --group <key> --file <绝对路径> --confirm`；完整格式、限制与示例见[通用导入](importing.md)。QQ/微信的候选路径、check和取钥流程不适用于文件收件箱。
+用户只提供文件、不需要读取客户端时，配置`platform:"import"`，可选`collection:"inbox"`、name，不提供客户端paths。collection和后续group_id只是本地收件箱标识，不要求真实账号/群/原始来源。先配置授权分组，再`read --group <key> --file <绝对路径> --confirm`；完整格式、限制与示例见[通用导入](importing.md)。QQ/微信的候选路径、check和取钥流程不适用于文件收件箱。
 
 ## 私有数据在哪里
 

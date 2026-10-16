@@ -12,11 +12,13 @@ from pathlib import Path
 import re
 import shutil
 import struct
+import time
 import xml.etree.ElementTree as ET
 import zipfile
 
 from chatnotice import project_path,save_json
 from memory_reader import ReadOnlyProcess,load_secrets,merge_verified_secrets
+from wechat_content import xml_root
 
 MAX_FILE=32*1024*1024
 V2_MAGIC=b'\x07\x08V2\x08\x07'
@@ -205,7 +207,53 @@ def safe_zip_extract(path: Path, target: Path) -> list[Path]:
     return output
 
 
+class WeChatImageLocator:
+    """Exact month/hash probes first; at most one fallback walk per group/batch."""
+    def __init__(self, root, config):
+        self.root, self.config = root, config
+        self.wanted, self.index = {}, {}
+        self.walks = self.names_examined = self.direct_hits = 0
+
+    def spec(self, message, image):
+        values = set(message.get('local_media_hashes', [])) | {image.get('md5', '')}
+        hashes = {v.lower() for v in values if isinstance(v, str) and re.fullmatch(r'[0-9a-fA-F]{32}', v)}
+        names = {v + suffix for v in hashes for suffix in ('.dat', '_h.dat', '_t.dat')}
+        folder = self.root / 'msg' / 'attach' / hashlib.md5(message['group_id'].encode()).hexdigest() if self.root else None
+        return folder, names
+
+    def register(self, message, image):
+        folder, names = self.spec(message, image)
+        if folder and names:
+            self.wanted.setdefault(folder, set()).update(names)
+
+    def locate(self, message, image):
+        folder, names = self.spec(message, image)
+        if folder is None or not names or not allowed_local_source(folder, self.config):
+            return []
+        month = message.get('time', '')[:7]
+        direct = []
+        if re.fullmatch(r'\d{4}-\d{2}', month):
+            direct = [folder / month / 'Img' / name for name in sorted(names)
+                      if (folder / month / 'Img' / name).is_file() and allowed_local_source(folder / month / 'Img' / name, self.config)]
+        if any(not p.name.endswith('_t.dat') for p in direct):
+            self.direct_hits += 1
+            return direct
+        if folder not in self.index:
+            found = {}
+            self.walks += 1
+            for base, _, files in os.walk(folder):
+                self.names_examined += len(files)
+                for name in files:
+                    if name.lower() in self.wanted.get(folder, names):
+                        candidate = Path(base) / name
+                        if candidate.is_file() and allowed_local_source(candidate, self.config):
+                            found.setdefault(name.lower(), []).append(candidate)
+            self.index[folder] = found
+        return sorted(set(direct) | {p for name in names for p in self.index[folder].get(name, [])})
+
+
 def collect(report: dict,config: dict,output: Path,wx_pid: int, *, persist: bool = True) -> dict:
+    started = time.monotonic()
     selected=report['messages']
     items=[]
     qq_value=config.get('qq',{}).get('media_dir','')
@@ -226,6 +274,15 @@ def collect(report: dict,config: dict,output: Path,wx_pid: int, *, persist: bool
     wx_probes=[]
     wx_value=config.get('wechat',{}).get('account_dir','')
     wxroot=Path(wx_value) if wx_value else None
+    locator = WeChatImageLocator(wxroot, config)
+    image_nodes = {}
+    for message in selected:
+        if message['platform'] == 'wechat' and message['type'] == 'image':
+            root = xml_root(message.get('text', ''))
+            image = root.find('img') if root is not None else None
+            if image is not None:
+                image_nodes[message['source_id']] = image
+                locator.register(message, image)
     for message in selected:
         if message['platform']=='qq':
             for attachment in message['attachments']:
@@ -253,17 +310,10 @@ def collect(report: dict,config: dict,output: Path,wx_pid: int, *, persist: bool
                               'candidates': [], 'discovery_error': 'malformed_message_xml'})
                 continue
             if message['type']=='image':
-                image=xml.find('img')
+                image=image_nodes.get(message['source_id'])
                 if image is None: continue
                 digest=image.get('md5','')
-                local_hashes=message.get('local_media_hashes',[]) or [digest]
-                folder=wxroot/'msg'/'attach'/hashlib.md5(message['group_id'].encode()).hexdigest()
-                matches=[]
-                target_names={name for value in local_hashes for name in (value+'.dat',value+'_h.dat',value+'_t.dat')}
-                for base,_,names in os.walk(folder):
-                    for name in names:
-                        if name in target_names:
-                            matches.append(Path(base)/name)
+                matches=locator.locate(message, image)
                 wx_probes+=matches
                 items.append({'source_id':message['source_id'],'platform':'wechat','group_name':message['group_name'],
                               'filename':digest+'.jpg','md5':digest,'candidates':[str(p) for p in matches],'image':True})
@@ -276,6 +326,7 @@ def collect(report: dict,config: dict,output: Path,wx_pid: int, *, persist: bool
                 items.append({'source_id':message['source_id'],'platform':'wechat','group_name':message['group_name'],
                               'filename':filename,'md5':app.findtext('md5') or '',
                               'candidates':[str(p) for p in matches if p.is_file()]})
+    discovery_seconds = time.monotonic() - started
     # Reuse an explicitly selected identical file, even if its displayed filename changed.
     hash_sources={}
     for item in items:
@@ -344,7 +395,11 @@ def collect(report: dict,config: dict,output: Path,wx_pid: int, *, persist: bool
             except (OSError,ValueError,zipfile.BadZipFile,ET.ParseError) as exc:
                 item['status']='processing_pending'; item['error']=str(exc)
     result={'items':items,'status_counts':dict(Counter(i['status'] for i in items)),
-            'remote_downloads':False,'image_key_printed':False}
+            'remote_downloads':False,'image_key_printed':False,
+            'timings': {'discovery_seconds': round(discovery_seconds, 4),
+                        'conversion_seconds': round(time.monotonic() - started - discovery_seconds, 4),
+                        'wechat_group_walks': locator.walks, 'wechat_names_examined': locator.names_examined,
+                        'wechat_direct_hits': locator.direct_hits}}
     if persist:
         save_json(str((output/'attachments-manifest.json').relative_to(Path(__file__).resolve().parent)),result)
     return result

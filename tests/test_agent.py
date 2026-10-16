@@ -75,6 +75,9 @@ class AgentFixture(unittest.TestCase):
         return {'messages': [m for m in self.data if accepts(m)], 'snapshots': [{}], 'parse_errors': []}
 
     def read(self, **kwargs):
+        # Keep coverage of the compatible, explicitly separate attachment API.
+        # The default lightweight read/write path is tested in test_fast_workflow.
+        kwargs.setdefault('prepare_images', False)
         return self.service.read(**kwargs)
 
     def commit_payload(self, page, index=0, **kwargs):
@@ -330,8 +333,10 @@ class IncrementalTests(AgentFixture):
     def test_long_gap_advances_with_one_day_limit(self):
         self.add_group('123', since=NOW - 10 * 86400, max_days=1)
         untils = []
-        for _ in range(3):
-            self.read()
+        for index in range(3):
+            # Explicitly begin historical catchup; default first reads now
+            # start with recent messages rather than old authorization floors.
+            self.read(**({'since': NOW - 10 * 86400} if index == 0 else {}))
             with ProcessingStore(self.root).connection() as db:
                 untils.append(db.execute('SELECT observed_until FROM progress').fetchone()[0])
         self.assertLess(untils[0], untils[1])

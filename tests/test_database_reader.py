@@ -1,4 +1,6 @@
 from __future__ import annotations
+import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -104,6 +106,52 @@ class ReaderTests(unittest.TestCase):
         self.assertTrue(report["wal_present"])
         self.assertEqual(db.file_digest(source), before)
         self.assertEqual(copy.read_bytes(), source.read_bytes())
+
+    def test_authenticated_sqlite_snapshot_reports_phases_and_cleans_scratch(self):
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        import cipher
+        # Generate a valid empty SQLite database, with SQLCipher-style reserve
+        # bytes. This is synthetic ciphertext, not a client DB or cached key.
+        empty = self.root / 'empty.db'
+        connection = sqlite3.connect(empty)
+        try:
+            connection.execute('PRAGMA page_size=4096')
+            connection.execute('VACUUM')
+        finally:
+            connection.close()
+        page = bytearray(empty.read_bytes())
+        self.assertEqual(len(page), 4096)
+        self.assertEqual(page[103:105], b'\x00\x00')
+        page[20] = 80
+        page[105:107] = struct.pack('>H', 4016)
+        salt, raw, iv = bytes(range(16)), bytes(range(32)), bytes(range(16, 32))
+        keys = cipher.derive_wechat_keys(raw, salt + bytes(4080))
+        encoder = Cipher(algorithms.AES(keys.encryption), modes.CBC(iv)).encryptor()
+        payload = encoder.update(bytes(page[16:4016])) + encoder.finalize()
+        tag = hmac.new(keys.authentication, payload + iv + struct.pack('<I', 1), hashlib.sha512).digest()
+        ciphertext = salt + payload + iv + tag
+        source = self.root / 'synthetic-client' / 'contact.db'
+        source.parent.mkdir()
+        source.write_bytes(ciphertext)
+        scratch = self.root / 'scratch'
+        config = {'wechat': {'database_dir': str(source.parent)}}
+        with patch.object(db, 'load_secrets', return_value={'wechat': {str(source.resolve()): raw.hex()}}), \
+                patch.object(db, 'project_path', side_effect=lambda relative: scratch):
+            with db.open_database(config, 'wechat', 'contact.db') as (connection, report):
+                self.assertEqual(connection.execute('PRAGMA quick_check').fetchone()[0], 'ok')
+                self.assertEqual(report['main_pages'], 1)
+                self.assertEqual(set(report['timings']), {'capture_seconds', 'derive_keys_seconds', 'main_decrypt_seconds',
+                                                          'wal_replay_seconds', 'sqlite_check_seconds'})
+                self.assertTrue(all(v >= 0 for v in report['timings'].values()))
+            self.assertEqual(list(scratch.iterdir()), [])
+            self.assertEqual(source.read_bytes(), ciphertext)
+            damaged = bytearray(ciphertext)
+            damaged[100] ^= 1
+            source.write_bytes(damaged)
+            with self.assertRaises(ValueError):
+                with db.open_database(config, 'wechat', 'contact.db'):
+                    self.fail('Tampered ciphertext must not open')
+            self.assertEqual(list(scratch.iterdir()), [])
 
     def test_acquisition_requires_authorization(self):
         with self.assertRaises(PermissionError):

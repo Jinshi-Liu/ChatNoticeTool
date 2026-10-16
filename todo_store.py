@@ -27,6 +27,14 @@ def normalize_due(value: str | None) -> str | None:
     return value
 
 
+def operation_task_id(operation):
+    """Resolve a stable operation target without reading or writing a store."""
+    task_id = operation.get('id') or 'agent:' + hashlib.sha256(operation['operation_id'].encode()).hexdigest()[:32]
+    if not isinstance(task_id, str) or not task_id or len(task_id) > 300:
+        raise ValueError('待办ID无效')
+    return task_id
+
+
 class TodoStore:
     def __init__(self, path: Path | None = None):
         path = path or project_path(DB_PATH)
@@ -35,11 +43,14 @@ class TodoStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as db:
             app_id = db.execute('PRAGMA application_id').fetchone()[0]
-            tables = db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if app_id not in (0, APP_ID) or (app_id == 0 and tables):
                 raise ValueError('该数据库不属于待办组件，拒绝修改')
-            if db.execute('PRAGMA user_version').fetchone()[0] > 1:
+            version = db.execute('PRAGMA user_version').fetchone()[0]
+            if version > 1:
                 raise ValueError('待办数据库版本较新，请不要用旧版程序修改')
+            if app_id == APP_ID and version == 1 and {'tasks', 'settings'} <= tables:
+                return  # Ordinary readers must not write database headers/DDL.
             db.execute(f'PRAGMA application_id={APP_ID}')
             db.execute('PRAGMA user_version=1')
             db.execute('''CREATE TABLE IF NOT EXISTS tasks (
@@ -114,14 +125,23 @@ class TodoStore:
             return [dict(r) for r in db.execute('SELECT * FROM tasks' + where +
                 ' ORDER BY done, due IS NULL, due, created_at, id', args)]
 
-    def page(self, offset: int = 0, limit: int = 50, include_removed: bool = False) -> dict:
+    def page(self, offset: int = 0, limit: int = 50, include_removed: bool = False, ids: list[str] | None = None) -> dict:
         if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 200:
             raise ValueError('offset须非负，limit须在1到200之间')
-        clause = '' if include_removed else ' WHERE removed=0'
+        if ids is not None and (not isinstance(ids, list) or not 1 <= len(ids) <= 200
+                                or any(not isinstance(i, str) or not i or len(i) > 300 for i in ids)
+                                or len(set(ids)) != len(ids)):
+            raise ValueError('ids须包含1到200个不重复的待办ID')
+        # Explicit IDs include removed records so the Agent can preserve status.
+        clause = '' if include_removed or ids is not None else ' WHERE removed=0'
+        params = []
+        if ids is not None:
+            clause = ' WHERE id IN (' + ','.join('?' for _ in ids) + ')'
+            params = ids
         with self.connection() as db:
-            total = db.execute('SELECT COUNT(*) FROM tasks' + clause).fetchone()[0]
+            total = db.execute('SELECT COUNT(*) FROM tasks' + clause, params).fetchone()[0]
             rows = db.execute('SELECT * FROM tasks' + clause +
-                              ' ORDER BY done,due IS NULL,due,created_at,id LIMIT ? OFFSET ?', (limit, offset))
+                              ' ORDER BY done,due IS NULL,due,created_at,id LIMIT ? OFFSET ?', (*params, limit, offset))
             items, size = [], 0
             for row in rows:
                 item = dict(row)
@@ -181,9 +201,7 @@ class TodoStore:
         action = operation.get('action')
         if set(operation) - {'operation_id', 'action', 'id', 'fields', 'baseline', 'value', 'message_keys'}:
             raise ValueError('未知的待办操作字段')
-        task_id = operation.get('id') or 'agent:' + hashlib.sha256(operation['operation_id'].encode()).hexdigest()[:32]
-        if not isinstance(task_id, str) or not task_id or len(task_id) > 300:
-            raise ValueError('待办ID无效')
+        task_id = operation_task_id(operation)
         fields = operation.get('fields', {})
         baseline = operation.get('baseline', {})
         if not isinstance(fields, dict) or not isinstance(baseline, dict):

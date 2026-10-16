@@ -5,7 +5,55 @@
 成功：`{"schema_version":1,"ok":true,"data":{...}}`，退出码0。
 失败：`{"schema_version":1,"ok":false,"error":{"code":"...","message":"...","next_actions":[]}}`，退出码2。
 
-结构化写入使用 `--input <私有UTF-8 JSON绝对路径>`，或 `--input -` 通过标准输入；上限1MiB，拒绝静默截断。不要把密钥放入任何输入。
+**日常仅两个入口：read批量读取结构化数据，write批量写入。**结构化写入优先`--input -`直接传标准输入，不另开工具调用落盘请求；兼容`--input <私有UTF-8 JSON绝对路径>`，上限1MiB，不静默截断。不要传密钥。
+
+## 日常read / write
+
+```text
+read [--group <key> ...] [--limit 50] [--timings]
+read --batch <批次> --cursor <next_cursor>
+read --todos [--id <待办ID> ...] [--cursor 0] [--limit 50] [--all]
+read --file <绝对路径> --group <已授权收件箱key> --confirm
+write --input - [--timings]
+```
+
+read默认只准备本页已授权纯图片，与精简消息一次返回attachments；不扫描内存、不下载、不调用模型、不自动处理文档/混合附件。--no-prepare-images仅在明确不需要图片时使用。分页不重读客户端。Agent使用自己的看图能力，随后write一次写待办及分析结果。
+
+```json
+{
+  "batch_id":"read返回的批次",
+  "operations":[{
+    "operation_id":"稳定逻辑操作ID",
+    "action":"create",
+    "message_keys":["消息key"],
+    "fields":{"title":"事项标题","note":"要求和已知说明直接写正文"}
+  }],
+  "results":[{"message_key":"消息key","content_hash":"内容版本","status":"done"}]
+}
+```
+
+- operations可省略/为空；每批最多200项。results每批1到200项；新待办ID自动关联，不需要再次查询后commit。单条消息本次提交的已有与候选待办ID合计最多100个（同一ID去重）；超限返回too_many_task_links，发生在写待办之前，可拆分operations重试。
+- done表示Agent确认该消息正文与适用附件已理解；缺失阶段字段会据此补为analyzed，工具仍校验图片准备、正文状态和版本。pending未完成，skipped明确跳过且须reason；需要细分时可传text_state/attachment_state。只准备过图片不等于可以done。
+- 工具先校验批次、版本、阶段和已有task_ids，再写待办。某操作失败，所有引用它的消息强制pending，其他消息可正常登记；成功部分的任务关联保留。即使漏填/只填部分operation_ids，也不能绕过从message_keys推导的依赖。
+- 只引用本次results中的已交付消息。task_ids可选，用于已有待办；新任务从成功操作自动关联。字段baseline、显式完成/移除、稳定operation_id约定与旧接口一致。
+- 两库不是原子事务。中断时重放同一operation_id和相同操作参数，不重复写；输入改变须按语义使用新ID。检查has_failures和逐项operations结果，顶层ok不代表全部成功。
+- 独立管理待办时write只传operations，不带batch_id/results/message_keys。read --todos或read --id批量核对；准确选ID会返回已移除记录，以免错误复活。
+
+在支持here-document的shell中，一次工具执行即可传stdin，无需先建文件：
+
+```sh
+<项目Python> -B -X utf8 <项目>/agent_cli.py write --input - <<'JSON'
+{"batch_id":"B","results":[{"message_key":"K","content_hash":"H","status":"done"}]}
+JSON
+```
+
+宿主也可直接传子进程stdin。PowerShell用UTF-8管道；Windows PowerShell 5.1需在当前会话设置UTF-8的$OutputEncoding，不改变全局配置。不要把消息内容拼成可执行命令。
+
+微信图片不返回CDN/XML传输属性，引用只返回完整当前标题及被引用消息标识；raw_ref仅在需要时`read --batch B --message K --raw`读取完整脱敏原文。content_ref仍须分块读全，默认分块是当前精简视图，非原始数据库行。
+
+## 首次配置与兼容接口（非日常链路）
+
+下面接口用于首次配置、故障、文档附件、历史回补或兼容旧调用，不要求每轮运行。
 
 ## 安装/来源
 
@@ -101,15 +149,16 @@ read --group <key> --since <起点> --until <终点> [--reprocess]
 read --group <key> --since <起点> --until <终点> --from-export <项目exports中的已有批次>
 ```
 
-- 默认按当前授权群读取，一次调用覆盖多个平台/来源，每个来源共用数据库快照。不自动取钥，不处理附件，不调用模型。
+- 默认按当前授权群读取，一次覆盖多个平台/来源，共用所需快照并准备本页已授权纯图片；不自动取钥、不调用模型。--no-prepare-images关闭图片准备，文档附件仍需明确申请。
 - 不接受模糊群名或未配置的群；范围不能越过授权起点/终点。较长历史按 `max_days` 分段，并返回 `more_history` 和 `read_windows`。
-- 新调用固定本次 `now`。默认以已接收位置为基础重叠24小时（单次跨度很小时缩短，以确保向前推进），按身份＋内容哈希去重。
+- 新调用固定本次 `now`。没有已接收位置且未传--since时，首次读取授权范围内最近max_days天（默认7天）；若授权更早，返回history_available_before及history_notice，明确更早历史尚未扫描。授权起点不变，历史回补用显式--since；不会自动从1970年等技术起点逐周空扫。
+- 后续默认以已接收位置为基础重叠24小时（单次跨度很小时缩短，以确保向前推进），按身份＋内容哈希去重。显式历史回补不越过未经扫描的缺口推进既有获取游标；已有历史追赶游标继续按窗口向前推进。
 - 返回消息的 `message_key`、`content_hash`、群规则、当前阶段、已有 `task_ids`。已完成且内容不变的历史不再作为待处理消息返回。`context` 最多附带各页相关群前24小时内附近两条已处理消息，受同一授权和大小预算约束；它们是只读上下文，不提交进度、不重新建事项，大内容同样可分块。不扩大范围拉取私聊。
 - `next_cursor` 不为null时继续同一批次。分页不会重新解密。数量limit为1–200，实际页可能因约32KiB内容预算更小，须以续读标识为准。
-- 超大单条提供 `content_ref`，正文用分块返回，直到 `next_offset:null`。分块是原始消息JSON的连续片段，合并后理解，不能当作缺失正文。
+- 超大单条提供content_ref，用分块返回到next_offset:null；默认是精简视图JSON的连续片段，必须合并理解。raw_ref为可选完整脱敏原文，需显式--raw，不每轮取回XML。
 - `--reprocess` 只在用户要求重分析时使用，重置本次实际读到消息的分析完成标记，不清除待办关联；仍用已有待办/幂等操作避免重复创建。
 - `--from-export` 是显式历史路径，只能选择同一来源账号的群；校验原范围、快照数据库来源及每条消息。无法验证、范围不足或文件缺失直接失败，不回退读客户端；不推进客户端获取游标。输出明确标记历史快照。
-- `--timings` 返回每来源读取、快照/解密、查询、正文解码、去重落库的耗时，以及快照数、行数及总耗时。`attachments prepare`、`todos apply`、`processing commit` 也支持 `--timings`，分别报告资源准备/缓存命中、待办写入和记账耗时。默认不输出诊断。不承诺固定秒数，数据库仍须安全快照、认证和WAL校验。
+- --timings返回读取、快照/解密、查询、正文、落库、本页附件和写入计时；snapshot_phases细分复制校验、派生密钥、主库解密、WAL重放及SQLite检查，并给出decrypted_pages和wal_committed_frames；图片准备含定位/转换、直接命中和每群回退遍历次数。Agent推理/看图与往返由调用端另测，不包括在内部计时。`attachments prepare`、`todos apply`、`processing commit` 也支持 `--timings`，分别报告资源准备/缓存命中、待办写入和记账耗时。默认不输出诊断。不承诺固定秒数，数据库仍须安全快照、认证和WAL校验。
 
 ## 附件
 
@@ -122,7 +171,7 @@ attachments prepare --input <请求文件> --pid <本人微信PID> --authorize-m
 {"batch_id":"批次ID","message_keys":["本页返回的message_key"]}
 ```
 
-每批1–200个已返回的消息ID；各消息返回 `prepared/pending/scope_denied/unsupported_or_no_attachment` 以及本地资源路径。只访问选定消息引用的本地资源，不下载、不执行附件，不改变原始客户端文件。
+以下分步附件入口仅在默认图片流程不覆盖（如文档、混合附件、另行授权取钥）时使用。每批1–200个已返回的消息ID；各消息返回 `prepared/pending/scope_denied/unsupported_or_no_attachment` 以及本地资源路径。只访问选定消息引用的本地资源，不下载、不执行附件，不改变原始客户端文件。
 
 本地缓存可复用，不重复转换未变化图片；文件元数据变化/丢失、授权变化、转换器版本变化使缓存失效。缓存不是对同用户恶意程序的安全隔离。`prepared` 不是OCR完成，也不是AI已分析。
 

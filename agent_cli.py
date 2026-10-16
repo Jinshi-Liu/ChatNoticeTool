@@ -38,10 +38,11 @@ def input_payload(name):
 
 
 def build_parser():
-    parser = Parser(description='ChatNoticeTool Agent接口：配置、授权范围内增量读取及独立待办管理')
-    commands = parser.add_subparsers(dest='command', required=True)
-    commands.add_parser('inspect', help='轻量状态，不读聊天、不验证密钥')
-    commands.add_parser('setup', help='幂等初始化，不覆盖个人配置')
+    parser = Parser(description='日常仅read批量读取、write批量写入；图片由当前Agent理解。',
+                    epilog='首次配置和旧分步命令保留兼容，按docs/agent/commands.md调用，不加入日常链路。')
+    commands = parser.add_subparsers(dest='command', required=True, metavar='{read,write}')
+    commands.add_parser('inspect')
+    commands.add_parser('setup')
     source = commands.add_parser('source').add_subparsers(dest='action', required=True)
     candidate = source.add_parser('candidates')
     candidate.add_argument('--platform', choices=['qq', 'wechat'], required=True)
@@ -62,7 +63,7 @@ def build_parser():
     listing.add_argument('--limit', type=int, default=50)
     for action in ('plan', 'apply', 'remove'):
         groups.add_parser(action).add_argument('--input', required=True)
-    importing = commands.add_parser('import', help='导入明确选定的JSON、UTF-8文本、图片或文档；不连接聊天服务')
+    importing = commands.add_parser('import')
     importing.add_argument('--group', dest='group_key', required=True)
     importing.add_argument('--file', required=True, help='用户明确选择的绝对文件路径')
     importing.add_argument('--format', default='auto', help='默认auto；其他格式由已注册适配器声明')
@@ -70,7 +71,15 @@ def build_parser():
     importing.add_argument('--confirm', dest='confirmed', action='store_true')
     importing.add_argument('--limit', type=int, default=50)
     importing.add_argument('--timings', action='store_true')
-    read = commands.add_parser('read', help='增量读取；--batch仅返回已有批次下一页，不重读数据库')
+    importing.add_argument('--prepare-images', action='store_true', help='只准备本页已授权图片，不扫描内存')
+    read = commands.add_parser('read', help='批量读消息和图片；--todos读待办；--batch继续原批次')
+    read.add_argument('--file', help='读取明确选择的本地通知文件；需--group及--confirm')
+    read.add_argument('--format', default='auto', help='只用于--file，默认自动识别')
+    read.add_argument('--timestamp', help='只用于--file，无原时间时的明确缺省时间')
+    read.add_argument('--confirm', dest='confirmed', action='store_true', help='确认允许处理所选--file')
+    read.add_argument('--todos', action='store_true', help='读取组件待办，不读聊天')
+    read.add_argument('--id', dest='ids', action='append', help='批量读取指定待办ID，可重复；包含已移除项')
+    read.add_argument('--all', dest='include_removed', action='store_true', help='列待办时包含已移除项')
     read.add_argument('--group', dest='group_keys', action='append')
     read.add_argument('--since')
     read.add_argument('--until', default='now')
@@ -82,6 +91,9 @@ def build_parser():
     read.add_argument('--chars', type=int, default=8000)
     read.add_argument('--from-export')
     read.add_argument('--timings', action='store_true')
+    read.add_argument('--prepare-images', action='store_true', default=True, help=argparse.SUPPRESS)
+    read.add_argument('--no-prepare-images', dest='prepare_images', action='store_false', help='仅在不需要图片时关闭本页图片准备')
+    read.add_argument('--raw', action='store_true', help='与--batch --message组合，按需读取完整脱敏原文')
     read.add_argument('--reprocess', action='store_true', help='用户显式要求时重分析本次范围内已处理消息，不清除待办关联')
     attach = commands.add_parser('attachments').add_subparsers(dest='action', required=True).add_parser('prepare')
     attach.add_argument('--input', required=True)
@@ -97,6 +109,9 @@ def build_parser():
     apply = todos.add_parser('apply')
     apply.add_argument('--input', required=True)
     apply.add_argument('--timings', action='store_true')
+    write = commands.add_parser('write', help='批量写待办和处理结果；失败项保持pending，可幂等重试')
+    write.add_argument('--input', required=True, help='推荐-，直接从标准输入传JSON，不写临时请求文件')
+    write.add_argument('--timings', action='store_true')
     processing = commands.add_parser('processing').add_subparsers(dest='action', required=True)
     pending = processing.add_parser('pending')
     pending.add_argument('--group', dest='group_keys', action='append')
@@ -140,6 +155,8 @@ def dispatch(args, service):
         if args.action == 'get':
             return service.todo_store().get(args.id)
         return service.todos_apply(input_payload(args.input), timings=args.timings)
+    if args.command == 'write':
+        return service.write(input_payload(args.input), timings=args.timings)
     if args.action == 'pending':
         from agent_processing import ProcessingStore
         return ProcessingStore(service.root).pending(args.group_keys)

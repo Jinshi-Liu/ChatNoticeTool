@@ -8,7 +8,7 @@ import sys
 import time
 
 from agent_config import AgentConfig, AgentError, bound, private_path
-from agent_processing import ProcessingStore
+from agent_processing import MAX_TASK_LINKS, ProcessingStore, has_media
 from agent_sources import SOURCE_FACTORIES, cached_report, get_source
 from chatnotice import ROOT, LOCAL_TZ
 
@@ -63,13 +63,37 @@ class AgentService:
         raise AgentError('invalid_input', '未知来源操作')
 
     def read(self, *, group_keys=None, since=None, until=None, batch_id=None, cursor=0, limit=50,
-             message=None, offset=0, chars=8000, from_export=None, timings=False, reprocess=False):
+             message=None, offset=0, chars=8000, from_export=None, timings=False, reprocess=False,
+             prepare_images=True, raw=False, todos=False, ids=None, include_removed=False,
+             file=None, format='auto', timestamp=None, confirmed=False):
         started = time.monotonic()
+        if file is not None:
+            if (not isinstance(group_keys, list) or len(group_keys) != 1 or todos or ids is not None or include_removed
+                    or batch_id or since is not None or until not in (None, 'now') or cursor or message or offset or from_export or reprocess or raw):
+                raise AgentError('invalid_input', '文件读取须选择一个已授权收件箱分组，不能混用聊天范围、批次或待办参数')
+            return self.import_file(group_key=group_keys[0], file=file, format=format, timestamp=timestamp,
+                                    confirmed=confirmed, limit=limit, timings=timings, prepare_images=prepare_images)
+        if format != 'auto' or timestamp is not None or confirmed:
+            raise AgentError('invalid_input', '--format/--timestamp/--confirm只用于明确选择的--file')
+        if todos or ids is not None:
+            if group_keys or since is not None or until not in (None, 'now') or batch_id or message or offset or from_export or reprocess or raw:
+                raise AgentError('invalid_input', '待办读取不能混用聊天范围、批次或原文参数')
+            result = self.todo_store().page(cursor, limit, include_removed, ids)
+            result['next_cursor'] = result.pop('next_offset')
+            if timings:
+                result['timings'] = {'total_seconds': round(time.monotonic() - started, 4)}
+            return result
+        if include_removed:
+            raise AgentError('invalid_input', '--all仅用于待办读取')
+        if raw and not (batch_id and message):
+            raise AgentError('invalid_input', '--raw仅用于已交付消息的按需原文分块读取')
         if batch_id:
             if group_keys or since is not None or until not in (None, 'now') or from_export or reprocess:
                 raise AgentError('invalid_input', '--batch只继续已有快照，不能同时请求新范围或历史重分析')
             store = ProcessingStore(self.root)
-            return store.chunk(batch_id, message, offset, chars) if message else store.page(batch_id, cursor, limit)
+            if message:
+                return store.chunk(batch_id, message, offset, chars, raw=raw)
+            return self._finish_page(store.page(batch_id, cursor, limit), prepare_images, timings, started, store)
         if message or cursor or offset:
             raise AgentError('invalid_input', '分页或内容分块必须指定--batch')
         value = self.config.load()
@@ -93,6 +117,7 @@ class AgentService:
                         target += 1
                     window.update(since=target, until=target, target_until=target,
                                   more_history=False, queue_only=True)
+                    window.pop('history_available_before', None)
         if from_export and (len(sources) != 1 or next(iter(sources.values()))['platform'] not in ('qq', 'wechat')):
             raise AgentError('invalid_input', '--from-export只用于单个QQ/微信来源；其他文件请用import')
         reports, stats = {}, []
@@ -129,9 +154,29 @@ class AgentService:
         if timings:
             result['timings'] = {'sources': stats, 'dedup_persist_seconds': round(ledger_seconds, 4),
                                  'total_seconds': round(time.monotonic() - started, 4)}
+        return self._finish_page(result, prepare_images, timings, started, store)
+
+    def _finish_page(self, result, prepare_images, timings, started, store):
+        if prepare_images:
+            from agent_assets import prepare
+            keys = [item['message_key'] for item in result['messages']
+                    if 'content_ref' in item or item.get('message', {}).get('has_media') or has_media(item.get('message', {}))]
+            report = prepare(store, {'batch_id': result['batch_id'], 'message_keys': keys},
+                             images_only=True, timings=timings) if keys else {'results': []}
+            result['attachments'] = report['results']
+            for item in result['messages']:
+                prepared = next((r for r in report['results'] if r['message_key'] == item['message_key']), None)
+                if prepared and prepared['status'] == 'prepared':
+                    item['attachment_state'] = 'prepared'
+            result['attachment_notice'] = '仅准备本页已授权图片；Agent看图后write，未准备/无法理解的内容保留pending'
+            if timings:
+                result.setdefault('timings', {})['attachment_prepare'] = report.get('timings', {'prepare_seconds': 0, 'cache_hits': 0, 'preparation_attempts': 0})
+        result['next_actions'] = ['write --input -'] if result['messages'] else []
+        if timings:
+            result.setdefault('timings', {})['total_seconds'] = round(time.monotonic() - started, 4)
         return result
 
-    def import_file(self, *, group_key, file, format='auto', timestamp=None, confirmed=False, limit=50, timings=False):
+    def import_file(self, *, group_key, file, format='auto', timestamp=None, confirmed=False, limit=50, timings=False, prepare_images=False):
         if confirmed is not True:
             raise AgentError('confirmation_required', '请确认允许处理所选文件并添加--confirm；未读取正文')
         if type(limit) is not int or not 1 <= limit <= 200:
@@ -169,7 +214,7 @@ class AgentService:
         result.update(imported=True, counts=report['counts'], import_notice=report.get('notice', ''), read_client_database=False)
         if timings:
             result['timings'] = {'import_seconds': round(time.monotonic() - started, 4)}
-        return result
+        return self._finish_page(result, prepare_images, timings, started, ledger)
 
     def prepare(self, payload, **kwargs):
         from agent_assets import prepare
@@ -202,6 +247,100 @@ class AgentService:
         result = {'results': self.todo_store().apply_batch(operations)}
         if timings:
             result['timings'] = {'todo_write_seconds': round(time.monotonic() - started, 4)}
+        return result
+
+    def write(self, payload, *, timings=False):
+        """One Agent call, two durable databases; replay, never fake atomicity."""
+        started = time.monotonic()
+        if not isinstance(payload, dict) or set(payload) - {'batch_id', 'operations', 'results'}:
+            raise AgentError('invalid_input', 'write只接受batch_id、operations和results')
+        operations, results = payload.get('operations', []), payload.get('results')
+        if not payload.get('batch_id') and 'results' not in payload:
+            applied = self.todos_apply({'operations': operations}, timings=timings)
+            return {'operations': applied['results'], 'has_failures': any(not r['ok'] for r in applied['results']),
+                    **({'timings': applied['timings']} if timings else {})}
+        if (not isinstance(operations, list) or len(operations) > 200 or any(not isinstance(o, dict) for o in operations)
+                or not isinstance(results, list) or not 1 <= len(results) <= 200 or any(not isinstance(r, dict) for r in results)):
+            raise AgentError('invalid_input', 'operations最多200项，results须有1到200个对象')
+        batch_id = payload.get('batch_id')
+        keys = [r.get('message_key') for r in results]
+        ids = [o.get('operation_id') for o in operations]
+        if any(not isinstance(i, str) or not i or len(i) > 200 for i in ids) or len(set(ids)) != len(ids):
+            raise AgentError('invalid_input', 'operation_id须为不重复的稳定字符串')
+        for op in operations:
+            refs = op.get('message_keys')
+            if not isinstance(refs, list) or not refs or any(not isinstance(k, str) or k not in keys for k in refs):
+                raise AgentError('invalid_input', '每个待办操作须关联本次results中的已交付消息')
+        for row in results:
+            if set(row) - {'message_key', 'content_hash', 'status', 'reason', 'text_state', 'attachment_state', 'task_ids', 'operation_ids'}:
+                raise AgentError('invalid_input', 'results含未知字段，未写入数据')
+            dependencies = row.get('operation_ids', [])
+            if (not isinstance(dependencies, list) or any(not isinstance(i, str) or i not in ids for i in dependencies)
+                    or any(row.get('message_key') not in operations[ids.index(i)]['message_keys'] for i in dependencies)):
+                raise AgentError('invalid_input', 'operation_ids只能引用与此消息关联的本次操作；不填也会推导所有依赖')
+        todos, ledger = self.todo_store(), ProcessingStore(self.root)
+        def exists(task_id):
+            try:
+                todos.get(task_id)
+                return True
+            except ValueError:
+                return False
+        with ledger.connection() as db:
+            _, records = ledger.records(db, batch_id, keys)
+        normalized = []
+        for row, record in zip(results, records):
+            status = row.get('status')
+            state = 'analyzed' if status == 'done' else 'skipped' if status == 'skipped' else 'pending'
+            normalized.append({'text_state': state,
+                               'attachment_state': state if has_media(record['message']) else 'not_applicable', **row})
+        results = normalized
+        commit_payload = {'batch_id': batch_id, 'results': results}
+        # Reject invalid/stale content, fake analysis, missing existing task IDs
+        # before any todo write. New task IDs are linked from successful ops.
+        ledger.commit(commit_payload, exists, validate_only=True)
+        # Automatic links must fit the same bound as explicit task_ids, before
+        # any todo write; otherwise a successful bulk create cannot be committed.
+        from todo_store import operation_task_id
+        targets = defaultdict(set)
+        for op in operations:
+            try:
+                target = operation_task_id(op)
+            except ValueError:
+                continue  # Keep invalid operations as ordinary per-item failures.
+            for key in op['message_keys']:
+                targets[key].add(target)
+        if any(len(set(row.get('task_ids', [])) | targets[row['message_key']]) > MAX_TASK_LINKS for row in results):
+            raise AgentError('too_many_task_links', f'单条消息本次提交最多关联{MAX_TASK_LINKS}个候选待办ID；请拆分operations后重试，尚未写入待办')
+        clock = time.monotonic()
+        if operations:
+            # Recheck authorization immediately before the todo transaction,
+            # without reopening/reinitializing both stores through todos_apply.
+            with ledger.connection() as db:
+                ledger.records(db, batch_id, list(dict.fromkeys(k for op in operations for k in op['message_keys'])))
+            applied = todos.apply_batch(operations)
+        else:
+            applied = []
+        write_seconds = time.monotonic() - clock
+        prepared, summaries = [], []
+        for row in results:
+            linked = [(op, result) for op, result in zip(operations, applied) if row['message_key'] in op['message_keys']]
+            failed = [op['operation_id'] for op, result in linked if not result['ok']]
+            task_ids = list(dict.fromkeys(row.get('task_ids', []) + [result['id'] for _, result in linked if result['ok']]))
+            item = {**row, 'task_ids': task_ids}
+            if failed:
+                item.update(status='pending', reason='todo_operations_failed')
+            prepared.append(item)
+            summaries.append({'message_key': row['message_key'], 'status': item['status'],
+                              'task_ids': task_ids, 'failed_operation_ids': failed})
+        clock = time.monotonic()
+        committed = ledger.commit({'batch_id': batch_id, 'results': prepared}, exists)
+        result = {'batch_id': batch_id, 'operations': applied, 'results': summaries, 'processing': committed,
+                  'has_failures': any(not r['ok'] for r in applied),
+                  'notice': '失败操作对应消息保持pending；中断重试须复用相同operation_id和参数，不是跨库原子事务'}
+        if timings:
+            result['timings'] = {'todo_write_seconds': round(write_seconds, 4),
+                                 'processing_commit_seconds': round(time.monotonic() - clock, 4),
+                                 'total_seconds': round(time.monotonic() - started, 4)}
         return result
 
     def commit(self, payload, *, timings=False):

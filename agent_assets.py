@@ -7,9 +7,10 @@ import time
 import uuid
 
 from agent_config import AgentError, digest, encode, private_path
-from agent_processing import has_media
+from agent_processing import content_hash, has_media
+from wechat_content import describe
 
-CONVERTER_VERSION = 1
+CONVERTER_VERSION = 2
 IMAGES = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.heic', '.heif'}
 DOCUMENTS = {'.pdf', '.doc', '.docx', '.xlsx', '.txt', '.md', '.csv', '.html', '.htm', '.zip'}
 SUCCESS = {'image_decoded', 'copied_and_hash_verified', 'copied_local_file', 'thumbnail_available'}
@@ -17,6 +18,11 @@ SUCCESS = {'image_decoded', 'copied_and_hash_verified', 'copied_local_file', 'th
 
 def required_grants(message):
     if message['platform'] == 'wechat':
+        info = describe(message)
+        if info and not info['media']:
+            return set()
+        if info and info.get('media_kind') == 'image':
+            return {'images_to_agent'}
         if message.get('type') == 'image':
             return {'images_to_agent'}
         if message.get('type') == 'file_link_or_card':
@@ -85,13 +91,24 @@ def fingerprints(items, root, config, backend):
     return output
 
 
-def prepare(store, payload, *, pid=0, authorize_memory_read=False, timings=False):
+def prepare(store, payload, *, pid=0, authorize_memory_read=False, timings=False, images_only=False):
     started = time.monotonic()
     if not isinstance(payload, dict):
         raise AgentError('invalid_input', '附件准备输入必须是对象')
     batch_id, keys = payload.get('batch_id'), payload.get('message_keys')
     with store.connection() as db:
         batch, records = store.records(db, batch_id, keys)
+        cached_assets = {}
+        for record in records:
+            resource = store.resource_message(db, batch, record)
+            record['resource_message'] = resource
+            # A later same-group quote can reuse its original image cache.
+            # Bind to resource content + account/group, not to the quoting row;
+            # authorization and file fingerprints are still checked on each use.
+            resource_version = content_hash({k: v for k, v in resource.items() if k != 'source_id'})
+            record['cache_key'] = digest([record['group_key'], resource_version, CONVERTER_VERSION])
+            cached_assets[record['cache_key']] = db.execute('SELECT * FROM assets WHERE cache_key=? AND group_key=?',
+                                                         (record['cache_key'], record['group_key'])).fetchone()
     if pid and not authorize_memory_read:
         raise AgentError('authorization_required', '图片取钥需要单独明确授权')
     if authorize_memory_read and (type(pid) is not int or pid <= 0):
@@ -108,14 +125,17 @@ def prepare(store, payload, *, pid=0, authorize_memory_read=False, timings=False
         if 'unsupported' in needed or not has_media(record['message']):
             results.append({'message_key': record['message_key'], 'status': 'unsupported_or_no_attachment', 'items': []})
             continue
+        if images_only and needed != {'images_to_agent'}:
+            results.append({'message_key': record['message_key'], 'status': 'not_requested', 'items': [],
+                            'notice': '只自动准备纯图片；文档或混合附件请显式attachments prepare'})
+            continue
         if any(not rule['grant'][grant] for grant in needed):
             results.append({'message_key': record['message_key'], 'status': 'scope_denied', 'items': [],
                             'notice': '该消息附件所需的图片/文档交付权限尚未授权'})
             continue
         config = store.config.client_config(source)
-        cache_key = digest([record['group_key'], record['message_key'], record['content_hash'], CONVERTER_VERSION])
-        with store.connection() as db:
-            cached = db.execute('SELECT * FROM assets WHERE cache_key=? AND group_key=?', (cache_key, record['group_key'])).fetchone()
+        cache_key = record['cache_key']
+        cached = cached_assets[cache_key]
         hit = False
         if cached:
             items = json.loads(cached['manifest'])
@@ -132,7 +152,7 @@ def prepare(store, payload, *, pid=0, authorize_memory_read=False, timings=False
     # Invalidate old preparation before attempting conversion. A failed retry
     # must not retain an earlier success flag. One transaction, not one per file.
     store.mark_prepared_many(batch_id, initial_updates)
-    final_updates, cache_rows = [], []
+    final_updates, cache_rows, source_timings = [], [], []
     for source_id, requests in misses.items():
         source = batch['sources'][source_id]
         config = store.config.client_config(source)
@@ -140,9 +160,20 @@ def prepare(store, payload, *, pid=0, authorize_memory_read=False, timings=False
         output = private_path(store.root, 'exports/agent-assets/' + uuid.uuid4().hex)
         output.mkdir(parents=True, exist_ok=False)
         backend = get_source(source['platform'])
-        messages = [record['message'] for record, _ in requests]
+        messages, aliases, unique = [], {}, {}
+        for record, _ in requests:
+            resource = record['resource_message']
+            identity = digest({k: v for k, v in resource.items() if k != 'source_id'})
+            if identity not in unique:
+                unique[identity] = resource['source_id']
+                messages.append(resource)
+            aliases[record['message_key']] = unique[identity]
         try:
+            clock = time.monotonic()
             report = backend.prepare(config, messages, output, pid)
+            source_timings.append({'source_id': source_id, 'selected_messages': len(requests), 'unique_resources': len(messages),
+                                   'total_seconds': round(time.monotonic() - clock, 4),
+                                   **report.get('timings', {})})
         except Exception:
             # Keep source-wide parser/dependency failures explicit, and let other
             # sources/text messages proceed. Never echo untrusted document data.
@@ -154,7 +185,7 @@ def prepare(store, payload, *, pid=0, authorize_memory_read=False, timings=False
         with store.connection() as db:
             store.batch(db, batch_id)
         for record, cache_key in requests:
-            items = [item for item in report['items'] if item['source_id'] == record['message']['source_id']]
+            items = [item for item in report['items'] if item['source_id'] == aliases[record['message_key']]]
             message = record['message']
             expected = max(1, len(message.get('attachments', [])))
             ready = len(items) >= max(1, expected) and all(item['status'] in SUCCESS for item in items)
@@ -176,7 +207,8 @@ def prepare(store, payload, *, pid=0, authorize_memory_read=False, timings=False
     if timings:
         result['timings'] = {'prepare_seconds': round(time.monotonic() - started, 4),
                              'cache_hits': sum(item.get('cached') is True for item in results),
-                             'preparation_attempts': sum(item.get('cached') is False for item in results)}
+                             'preparation_attempts': sum(item.get('cached') is False for item in results),
+                             'sources': source_timings}
     return result
 
 

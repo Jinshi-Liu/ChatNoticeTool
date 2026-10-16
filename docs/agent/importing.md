@@ -38,7 +38,7 @@ collection默认inbox，不需要客户端paths。不同collection相互隔离�
 在定位脚本返回的argv_prefix后调用：
 
 ```text
-import --group <已授权group_key> --file <绝对文件路径> --confirm
+read --group <已授权group_key> --file <绝对文件路径> --confirm
 ```
 
 可选`--format auto|json|text|image|document`、`--timestamp <缺省消息ISO时间>`、`--limit 50`、`--timings`。其他格式由对应适配器声明。不加confirm不会读取文件正文；`--group`只选择一个已授权的本地分组，多条消息可一次导入。
@@ -48,13 +48,13 @@ import --group <已授权group_key> --file <绝对文件路径> --confirm
 - PNG/JPEG/GIF/WebP/BMP：作为图片附件，按文件签名检查并复制到私有收件箱，不需Pillow或OCR。
 - PDF、DOC/DOCX、XLSX、TXT/MD/CSV、HTML、ZIP：可作为文档附件复制，供当前Agent按其能力读取。prepare不等于已分析；不执行脚本/宏，不自动展开ZIP。文本若需作为附件可用`--format document`或JSON attachments。
 
-工具返回第一页面、batch_id、created/updated/unchanged统计和分页信息，后续直接走：
+日常仍只用read/write。文件read返回第一页面、batch_id、created/updated/unchanged统计、精简消息和本页已授权图片，后续直接走：
 
 ```text
-按需attachments prepare → Agent分析 → todos apply（有变更时）→ processing commit
+Agent理解/看图 → write --input -（待办操作和处理结果一次提交）
 ```
 
-不必再read一次获取刚导入的内容；继续分页用`read --batch ... --cursor ...`。日常read直接消费导入后的待处理队列，不按客户端模式补扫多年空历史，不重复解析原文件。用户显式要求重新扫描收件箱时可用`read --since ... --until ...`，仍按max_days分段。
+旧import命令仅保留兼容（可用--prepare-images），不加入日常链路。不必再read一次获取刚导入的内容；继续分页用`read --batch ... --cursor ...`。日常read直接消费导入后的待处理队列，不按客户端模式补扫多年空历史，不重复解析原文件。用户显式要求重新扫描收件箱时可用`read --since ... --until ...`，仍按max_days分段。
 
 ## 3. 最小JSON格式
 
@@ -104,6 +104,6 @@ python -B -X utf8 examples/adapters/jsonl_adapter.py --help
 python -B -X utf8 examples/adapters/jsonl_adapter.py inspect
 ```
 
-通过此入口配置`platform:"example_jsonl"`，其余collection/分组流程相同，再用同一入口`import --group ... --file ... --format jsonl --confirm`。**试用阶段所有命令都使用此入口**，普通agent_cli未注册example_jsonl；正式集成需明确将工厂加入agent_sources的注册表。
+通过此入口配置`platform:"example_jsonl"`，其余collection/分组流程相同，再用同一入口`read --group ... --file ... --format jsonl --confirm`。**试用阶段所有命令都使用此入口**，普通agent_cli未注册example_jsonl；正式集成需明确将工厂加入agent_sources的注册表。
 
 开发时复制该类，修改platform、formats和load_rows映射，继承通用导入的范围检查、附件限制、私有存储、去重与批次流程。不是另起一套直接写待办/SQLite的脚本。客户端/API接入的更完整接口见[扩展指引](extending.md)。

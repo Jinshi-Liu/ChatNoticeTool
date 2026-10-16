@@ -17,6 +17,7 @@ import time
 from chatnotice import LOCAL_TZ, ReadScope, project_path, save_json
 from database_reader import open_database
 from memory_reader import protect_secret
+from wechat_content import describe
 
 MAX_BODY = 16 * 1024 * 1024
 STRING_FIELDS = {45101:'text',45402:'filename',45403:'filepath',45419:'file_ext',
@@ -307,9 +308,12 @@ def read_selected(config: dict, request: dict, *, keep_raw: bool = False) -> dic
                 typ=WX_TYPES.get(row['message_type'] & 0xFFFFFFFF,'unknown')
                 # Never publish arbitrary 32-hex metadata strings: they could be
                 # media credentials. Keep only actual selected-group filenames.
-                local_hashes=verified_local_image_hashes(row.get('packed_info') or b'',config['wechat']['account_dir'],row['group_id'],message['time'][:7])
+                info = describe({'platform': 'wechat', 'type': typ, 'text': text})
+                needs_images = typ == 'image' or (info and info.get('media_kind') == 'image')
+                local_hashes=verified_local_image_hashes(row.get('packed_info') or b'',config['wechat']['account_dir'],row['group_id'],message['time'][:7]) if needs_images else []
+                no_media = typ in ('text','system','call') or (info is not None and not info['media'])
                 message.update(text=text,body_status=status,type=typ,attachments=[],local_media_hashes=local_hashes,
-                    attachment_content_status='not_applicable' if typ in ('text','system','call') else 'not_processed')
+                    attachment_content_status='not_applicable' if no_media else 'not_processed')
         except (ValueError,TypeError) as exc:
             message.update(text='',body_status='parse_pending',type='unknown',attachments=[],
                            attachment_content_status='unknown')
@@ -319,6 +323,11 @@ def read_selected(config: dict, request: dict, *, keep_raw: bool = False) -> dic
               'snapshots': snapshots, 'parse_errors': errors, 'local_records_only': True,
               'all_attachment_contents_processed': False,
               'timings': {'snapshot_decrypt_seconds': round(snapshot_seconds, 4),
+                          'snapshot_phases': {name: round(sum(s.get('timings', {}).get(name, 0) for s in snapshots), 4)
+                                              for name in ('capture_seconds', 'derive_keys_seconds', 'main_decrypt_seconds',
+                                                           'wal_replay_seconds', 'sqlite_check_seconds')},
+                          'decrypted_pages': sum(s.get('main_pages', 0) for s in snapshots),
+                          'wal_committed_frames': sum(s.get('wal_committed_frames', 0) for s in snapshots),
                           'query_seconds': round(query_seconds, 4),
                           'decode_seconds': round(time.monotonic() - decode_started, 4)}}
     if keep_raw:
