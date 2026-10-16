@@ -677,8 +677,48 @@ class SnapshotAndCliTests(unittest.TestCase):
                                     cwd=cwd, capture_output=True, text=True, encoding='utf-8', timeout=20)
             self.assertEqual(result.returncode, 0, result.stderr)
             data = json.loads(result.stdout)['data']
-            self.assertEqual(data['root'], str(component))
+            self.assertEqual(data['root'], str(component.resolve()))
             self.assertFalse(data['read_chat_bodies'])
+            self.assertFalse((component / 'state').exists())
+
+    def test_locator_canonicalizes_benign_absolute_path_components(self):
+        import agent_locator
+        with tempfile.TemporaryDirectory(prefix='locator canonical 中文 ') as directory:
+            root = Path(directory)
+            component, neighbor = root / 'component', root / 'neighbor'
+            component.mkdir()
+            neighbor.mkdir()
+            for name in ('agent_cli.py', 'todo_store.py', 'config.example.json'):
+                (component / name).touch()
+            supplied = neighbor / '..' / 'component'
+            result = agent_locator.locate(str(supplied), sys.executable, True)
+            self.assertEqual(result['root'], str(component.resolve()))
+            self.assertEqual(agent_locator.locate(str(component))['python'], result['python'])
+            self.assertFalse(result['read_chat_bodies'])
+
+    def test_locator_rejects_supplied_root_and_ancestor_links(self):
+        import agent_locator
+        with tempfile.TemporaryDirectory(prefix='locator link synthetic ') as directory:
+            root = Path(directory).resolve()
+            target = root / 'target'
+            component = target / 'component'
+            component.mkdir(parents=True)
+            for name in ('agent_cli.py', 'todo_store.py', 'config.example.json'):
+                (component / name).touch()
+            for name in ('agent_cli.py', 'todo_store.py', 'config.example.json'):
+                (target / name).touch()
+            alias = root / 'alias'
+            try:
+                alias.symlink_to(target, target_is_directory=True)
+            except OSError:
+                if sys.platform != 'win32':
+                    self.skipTest('Directory links unavailable in this environment')
+                result = subprocess.run(['cmd', '/c', 'mklink', '/J', str(alias), str(target)], capture_output=True, timeout=10)
+                if result.returncode:
+                    self.skipTest('Neither directory symlinks nor junctions are available')
+            for supplied in (alias, alias / 'component'):
+                with self.assertRaises(ValueError):
+                    agent_locator.locate(str(supplied), sys.executable)
             self.assertFalse((component / 'state').exists())
 
     def test_cleanup_owns_all_new_public_files(self):

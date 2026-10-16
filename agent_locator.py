@@ -21,6 +21,13 @@ def locate(root=None, python=None, remember=False):
     if not project.is_absolute():
         raise ValueError('请提供组件绝对目录')
     project = project.absolute()
+    # Check the supplied path BEFORE canonicalization, including ancestors:
+    # resolve() alone would hide a junction/symlink. Once verified, resolving
+    # also normalizes legitimate Windows 8.3 TEMP aliases (e.g. RUNNER~1).
+    for candidate in (project, *project.parents):
+        if candidate.is_symlink() or (candidate.exists() and getattr(candidate.lstat(), 'st_file_attributes', 0) & 0x400):
+            raise ValueError('组件目录及祖先不能是链接或目录联接')
+    project = project.resolve()
     connection = private_path(project, 'state/component-location.json')
     if not all((project / name).is_file() for name in ('agent_cli.py', 'todo_store.py', 'config.example.json')):
         raise ValueError('该位置不是组件目录；请提供准确位置，不要扫描磁盘')
