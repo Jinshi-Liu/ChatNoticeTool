@@ -60,6 +60,8 @@ AGENTS.md → agent_locator.py定位组件/项目Python → agent_cli.py read
 
 日常只使用read/write两个基础操作；read --todos/--id批量读待办，read --file明确接入用户文件，write也可独立写待办。旧配置/分步工具保留兼容，不作为每轮工作链。`wechat_content.py`仅做技术分类和视图投影，完整脱敏内容保留按需--raw访问，不制定通知业务规则。
 
+`dingtalk_export.py`是钉钉V3群文本实验来源，复用现有read/write与处理库；`dingtalk_probe.py`只保留稳定快照与受验证WAL回放的内部原语，无独立命令、日志扫描或任务分类。无页MAC的格式限制及合成验证范围见[钉钉说明](docs/agent/dingtalk.md)。
+
 `agent_config.py`负责版本化配置、原子写入和群范围；`agent_sources.py`显式注册来源工厂，封装QQ/微信能力及有界候选发现；`agent_imports.py`提供不依赖Windows API的文件收件箱；`agent_processing.py`负责消息版本、获取游标、可恢复批次、分页和关联；`agent_assets.py`负责当前授权下的资源准备和缓存；`agent_service.py`为命令门面，`agent_cli.py`输出版本化JSON。
 
 `messages.read_selected`支持同一平台不同群窗口共享快照，Agent路径不重复生成旧入口的完整导出或原始行封存；不落盘原始数据库行。处理库明文保存选定消息，正常退出仍保留，必须按私有资料管理。

@@ -17,7 +17,7 @@ Local QQ / WeChat export, portable file import, and a standalone desktop todo wi
 - 按准确群ID和明确时间范围导出本机已有的 QQ / 微信消息，保留未知类型和解析缺口。
 - 通用导入JSON、UTF-8文本、图片和文档，复用增量分析与待办流程；不要求真实来源信息，有说明直接写待办正文。
 - 从已登录客户端进行有界、只读的密钥扫描；验证后用 Windows DPAPI 缓存，绝不打印明文密钥。
-- 在临时副本上解密，校验数据库页面、WAL提交边界和 SQLite 一致性；正常关闭后删除临时数据库。
+- 在临时副本上解密，校验WAL提交边界和SQLite结构，QQ/微信另做页认证；钉钉实验格式没有页MAC。正常关闭后删除临时数据库。
 - 处理部分本地图片、PDF、DOC / DOCX、XLSX、文本和 ZIP；不自动下载附件、不执行文档中的脚本或宏。
 - 独立待办组件：新增、直接编辑、完成 / 撤回、移除、置顶、多个详情窗口、自动保存、进度持久化。
 - 外部脚本通过稳定ID新增或更新待办，保留已有完成 / 移除状态。
@@ -33,13 +33,14 @@ Local QQ / WeChat export, portable file import, and a standalone desktop todo wi
 | Python | 推荐 Python 3.13 x64（已验证 3.13.11）；桌面界面需Tkinter，文件导入不需要 |
 | QQ | 已验证 9.9.21.38711；其他版本不保证 |
 | 微信 | 已验证 4.1.15.13；其他版本不保证 |
+| 钉钉 | V3本地群聊文本实验适配；仅合成测试，尚未验证真实客户端版本，详见[使用边界](docs/agent/dingtalk.md) |
 | FFmpeg | 可选；WXGF / HEVC 图片需要本机 `ffmpeg` 可执行文件在 PATH 中 |
 
 单元测试使用合成数据，不含真实账号、密钥或聊天附件。测试通过不代表你的客户端或所有消息类型都兼容。
 
 ## 推荐：组件 + 项目规则，让现有 Agent 带着配置
 
-根目录 [`AGENTS.md`](AGENTS.md) 是简短规则入口，详细说明在 [`docs/agent/`](docs/agent/configuration.md)，工具入口是 `agent_cli.py`。**不需要安装Skill，不是软件内置AI，也不接第二个模型。**Agent负责理解通知、使用自己的读图能力、判断如何管理待办；组件负责群范围、读取、幂等写入和处理进度。[通用文件导入](docs/agent/importing.md)提供不依赖Windows API的本地接入，也有可运行的JSONL适配器范例；现有内置聊天读取器依赖 Windows QQ / 微信，不代表已接入钉钉。需要新来源或系统时，Agent可按[扩展指引](docs/agent/extending.md)补充可复用工具。
+根目录 [`AGENTS.md`](AGENTS.md) 是简短规则入口，详细说明在 [`docs/agent/`](docs/agent/configuration.md)，工具入口是 `agent_cli.py`。**不需要安装Skill，不是软件内置AI，也不接第二个模型。**Agent负责理解通知、使用自己的读图能力、判断如何管理待办；组件负责群范围、读取、幂等写入和处理进度。[通用文件导入](docs/agent/importing.md)提供不依赖Windows API的本地接入，也有可运行的JSONL适配器范例；QQ / 微信本地读取仍依赖Windows；另有[钉钉V3群文本实验来源](docs/agent/dingtalk.md)，接入同一read/write，但未实测客户端版本，不等于已验证兼容。需要新来源或系统时，Agent可按[扩展指引](docs/agent/extending.md)补充可复用工具。
 
 读取Windows客户端时先完成下文环境安装。仅做文件导入和处理记账时，Python 3.13标准库即可，不需Tkinter、第三方包或客户端取钥。在项目目录启动支持 `AGENTS.md` 的Agent即可自动加载规则。以pi为例（替换成自己的目录）：
 

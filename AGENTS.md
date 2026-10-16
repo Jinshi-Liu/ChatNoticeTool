@@ -19,6 +19,7 @@
 - [通用导入](docs/agent/importing.md)：JSON、文本、图片、文档接入；可运行的JSONL适配器范例。
 - [配置指南](docs/agent/configuration.md)：连接账号、选群、保存分群规则及授权。
 - [命令参考](docs/agent/commands.md)：JSON输入、接口与分页；不要每轮重读整份手册。
+- [钉钉实验来源](docs/agent/dingtalk.md)：仅V3本地群文本，明确UID，不扫描日志/内存；未实测客户端版本。
 - [扩展指引](docs/agent/extending.md)：可以按用户需求新增可复用工具、平台或系统适配，不限于现有QQ/微信实现。
 - [故障处理](docs/agent/troubleshooting.md)：只修复当前阻塞项，不盲目重试全套流程。
 

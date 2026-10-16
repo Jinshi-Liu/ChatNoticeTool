@@ -45,7 +45,7 @@ def build_parser():
     commands.add_parser('setup')
     source = commands.add_parser('source').add_subparsers(dest='action', required=True)
     candidate = source.add_parser('candidates')
-    candidate.add_argument('--platform', choices=['qq', 'wechat'], required=True)
+    candidate.add_argument('--platform', choices=['qq', 'wechat', 'dingtalk'], required=True)
     candidate.add_argument('--base', help='只在指定绝对目录下探测已知相对布局')
     configure = source.add_parser('configure')
     configure.add_argument('--input', required=True, help='UTF-8 JSON路径；-表示标准输入')

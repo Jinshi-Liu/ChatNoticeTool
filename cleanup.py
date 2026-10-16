@@ -14,7 +14,7 @@ OWNER_ID = 'chatnoticetool-owned-v1'
 OWNED = frozenset({".chatnotice-owned.json", "README.md", "config.json", "chatnotice.py",
     "cleanup.py", "run.cmd", "cleanup.cmd", "tests", "research", "state", "exports",
     "runtime", "vendor", "__pycache__", "cipher.py", "memory_reader.py", "database_reader.py", "groups.py", "messages.py", "read_chats.py", "attachments.py", "document_formats.py", "widget_ui.py", "glass_style.py", "todo_detail.py", "todo_store.py", "todo_widget.py", "todo-widget.cmd", "todo.ico", "initial-todos.json", "local_setup.py", "config.example.json", "requirements.txt",
-    "agent_cli.py", "agent_config.py", "agent_service.py", "agent_sources.py", "agent_processing.py", "agent_assets.py", "wechat_content.py", "agent_imports.py", "agent_locator.py", "AGENTS.md", "docs", "examples", "skills",
+    "dingtalk_export.py", "dingtalk_probe.py", "agent_cli.py", "agent_config.py", "agent_service.py", "agent_sources.py", "agent_processing.py", "agent_assets.py", "wechat_content.py", "agent_imports.py", "agent_locator.py", "AGENTS.md", "docs", "examples", "skills",
     ".gitignore", ".gitattributes", "SECURITY.md", "CONTRIBUTING.md", "NOTICE.md", "LICENSE", "CHANGELOG.md", "ARCHITECTURE.md", ".github"})
 RUNTIME = frozenset({"state", "exports", "runtime", "__pycache__"})
 

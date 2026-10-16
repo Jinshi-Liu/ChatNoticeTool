@@ -114,9 +114,14 @@ def _import_adapter():
     return ImportSource()
 
 
+def _dingtalk_adapter():
+    from dingtalk_export import DingTalkSource
+    return DingTalkSource()
+
+
 # Explicit, trusted-code registration only: never load module paths from chat/config.
 SOURCE_FACTORIES = {'qq': lambda: LocalSource('qq'), 'wechat': lambda: LocalSource('wechat'),
-                    'import': _import_adapter}
+                    'import': _import_adapter, 'dingtalk': _dingtalk_adapter}
 
 
 def register_source(platform, factory):
@@ -140,8 +145,22 @@ def get_source(platform):
 
 def candidates(platform, base=None):
     """Bounded metadata-only probes in familiar locations, never a disk search."""
+    if platform == 'dingtalk':
+        if base is not None and (not Path(base).is_absolute() or not Path(base).is_dir()):
+            raise AgentError('path_not_found', '--base须是已存在的绝对目录')
+        roots = [Path(base)] if base else [Path(os.environ[k]) / 'DingTalk' for k in ('APPDATA', 'LOCALAPPDATA') if os.environ.get(k)]
+        found = {}
+        for root in roots:
+            if not root.is_dir():
+                continue
+            entries = [root] + [p for p in islice(root.iterdir(), 100) if p.name.lower().endswith('_v3')]
+            for path in entries:
+                if (path / 'DBFiles/dingtalk.db').is_file() and not path.is_symlink():
+                    found[str(path.resolve())] = {'paths': {'account_dir': str(path.resolve())}, 'validated': False}
+        return {'candidates': list(found.values()), 'bounded_search': True, 'read_chat_bodies': False,
+                'notice': '仅目录元数据；请用户明确本人UID，不读取账号日志或密钥'}
     if platform not in PLATFORMS:
-        raise AgentError('unsupported_source', '首版只支持qq和wechat')
+        raise AgentError('unsupported_source', '没有该来源的目录候选工具')
     if base is not None:
         base = Path(base)
         if not base.is_absolute() or not base.is_dir():

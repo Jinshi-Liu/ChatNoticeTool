@@ -60,7 +60,7 @@ JSON
 ```text
 inspect
 setup
-source candidates --platform qq|wechat [--base <明确绝对目录>]
+source candidates --platform qq|wechat|dingtalk [--base <明确绝对目录>]
 source configure --input <请求文件>
 source check --source <来源ID>
 source connect --source <来源ID> --pid <本人客户端PID> --authorize-memory-read
@@ -86,6 +86,8 @@ source connect --source <来源ID> --pid <本人客户端PID> --authorize-memory
 微信的 `paths` 为 `database_dir` 和 `account_dir`。目录必须存在且为绝对路径。`expected_revision` 使用最近的inspect/写入返回值。账号ID由平台和规范化数据库目录派生；换账号目录产生新来源，不继承原群授权。新入口不覆盖旧 `config.json` 的客户端路径；单独保存每个来源，兼容原手工入口。媒体访问不继承旧的 `extra_allowed_roots`，首版只访问该来源媒体目录。
 
 文件收件箱来源配置使用`platform:"import"`、可选`collection:"inbox"`和name，不需要客户端paths、账号或取钥。其check只统计本地已导入条数，groups只列已导入分组元数据，首次可自行命名inbox分组；详见[通用导入](importing.md)。
+
+钉钉实验来源使用platform:dingtalk、明确uid和paths.account_dir；不自动读日志或扫描内存。source check仅验证首页结构，返回format_candidate，不代表实机验证。能力、权限和格式限制见[钉钉V3实验读取](dingtalk.md)，日常仍只有read/write。
 
 ## 群配置
 

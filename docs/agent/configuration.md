@@ -29,6 +29,10 @@ pi
 
 将配置差异简短展示后一次确认，不对每个字段重复提问。来源配置与群规则通过工具写入，配置版本变化要重新预览。
 
+## 钉钉实验来源
+
+V3本地群文本使用同一配置/授权与read/write接口，必须明确本人account_dir和真实uid，不读账号日志猜UID，不扫描内存；尚未实测客户端版本，不支持V2或媒体。步骤及无页MAC等重要限制见[钉钉实验读取](dingtalk.md)。
+
 ## 通用导入来源
 
 用户只提供文件、不需要读取客户端时，配置`platform:"import"`，可选`collection:"inbox"`、name，不提供客户端paths。collection和后续group_id只是本地收件箱标识，不要求真实账号/群/原始来源。先配置授权分组，再`read --group <key> --file <绝对路径> --confirm`；完整格式、限制与示例见[通用导入](importing.md)。QQ/微信的候选路径、check和取钥流程不适用于文件收件箱。
