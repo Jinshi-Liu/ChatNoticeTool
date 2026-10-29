@@ -23,31 +23,43 @@ class SegmentedControl(tk.Canvas):
         self.left_count=self.create_text(91,13,anchor='w',font=(FONT,-16,'bold'),fill=ACCENT)
         self.right_count=self.create_text(214,13,anchor='w',font=(FONT,-16,'bold'),fill=MUTED)
         self.pill=self.create_line(6,58,58,58,fill=ACCENT,width=3,capstyle='round')
-        self.bind('<Button-1>',lambda e:command(e.x>=self.winfo_width()/2))
+        self.bind('<Button-1>',lambda e:command(e.x>=self.tab_boundary))
         self.bind('<Left>',lambda e:command(False)); self.bind('<Right>',lambda e:command(True))
         self.configure(cursor='hand2')
+        self.layout_tabs()
     def set_compact(self,value):
         if self.compact==value: return
         self.compact=value
-        self.configure(width=204 if value else 246,height=65)
-        for item,x,y in ((self.left,4,28),(self.right,108 if value else 127,28),
-                         (self.left_count,79 if value else 91,13),
-                         (self.right_count,181 if value else 214,13)):
-            self.coords(item,x,y)
-        state=self.state; self.state=None
-        if state: self.update_state(*state)
+        self.layout_tabs()
+
+    def layout_tabs(self):
+        # Measure the actual glyphs/counts; neither DPI nor longer counts may overlap.
+        self.coords(self.left,4,28)
+        left_end=self.bbox(self.left)[2]
+        self.coords(self.left_count,max(left_end+8,79 if self.compact else 91),13)
+        count_end=self.bbox(self.left_count)
+        count_end=count_end[2] if count_end else left_end+8
+        right_x=max(count_end+14,108 if self.compact else 127)
+        self.tab_boundary=(count_end+right_x)/2
+        self.coords(self.right,right_x,28)
+        right_end=self.bbox(self.right)[2]
+        self.coords(self.right_count,max(right_end+8,181 if self.compact else 214),13)
+        bounds=self.bbox(self.right_count)
+        end=bounds[2] if bounds else right_end
+        self.configure(width=max(204 if self.compact else 246,end+4),height=65)
+        selected=self.state and self.state[2]
+        x=right_x+2 if selected else 6
+        self.coords(self.pill,x,58,x+52,58)
 
     def update_state(self,pending,done,selected):
         state=(pending,done,selected)
         if state==self.state: return
         self.state=state
-        x=(110 if selected else 6) if self.compact else (129 if selected else 6)
-        y=58
-        self.coords(self.pill,x,y,x+52,y)
         self.itemconfigure(self.left,fill=MUTED if selected else INK)
         self.itemconfigure(self.right,fill=INK if selected else MUTED)
         self.itemconfigure(self.left_count,text=str(pending),fill=MUTED if selected else ACCENT)
         self.itemconfigure(self.right_count,text=str(done),fill=ACCENT if selected else MUTED)
+        self.layout_tabs()
 
 
 class CheckHandle:

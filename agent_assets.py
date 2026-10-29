@@ -127,7 +127,7 @@ def prepare(store, payload, *, pid=0, authorize_memory_read=False, timings=False
             continue
         if images_only and needed != {'images_to_agent'}:
             results.append({'message_key': record['message_key'], 'status': 'not_requested', 'items': [],
-                            'notice': '只自动准备纯图片；文档或混合附件请显式attachments prepare'})
+                            'notice': '只自动准备纯图片；文档或混合附件请显式read --batch <B> --message <K> --attachments'})
             continue
         if any(not rule['grant'][grant] for grant in needed):
             results.append({'message_key': record['message_key'], 'status': 'scope_denied', 'items': [],
@@ -184,8 +184,11 @@ def prepare(store, payload, *, pid=0, authorize_memory_read=False, timings=False
         # Another process may have revoked or changed authorization meanwhile.
         with store.connection() as db:
             store.batch(db, batch_id)
+        items_by_source = {}
+        for item in report['items']:
+            items_by_source.setdefault(item['source_id'], []).append(item)
         for record, cache_key in requests:
-            items = [item for item in report['items'] if item['source_id'] == aliases[record['message_key']]]
+            items = items_by_source.get(aliases[record['message_key']], [])
             message = record['message']
             expected = max(1, len(message.get('attachments', [])))
             ready = len(items) >= max(1, expected) and all(item['status'] in SUCCESS for item in items)

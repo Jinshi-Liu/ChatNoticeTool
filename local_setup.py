@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import shutil
 
-from chatnotice import ROOT, project_path
+from project_core import ROOT
 from cleanup import OWNER_ID, OWNED
 
 
@@ -39,6 +39,6 @@ if __name__ == '__main__':
         created = initialize()
         print('Created: '+(', '.join(created) or 'nothing; existing files kept'))
         print('Todo widget: python todo_widget.py')
-        print('Chat reading: edit config.json, then follow README. Memory scanning is disabled by default.')
+        print('Configuration: python agent_setup.py inspect. Daily workflow: python agent_cli.py read/write. Memory scanning is disabled by default.')
     except (OSError, ValueError) as exc:
         raise SystemExit('Initialization refused: '+str(exc))

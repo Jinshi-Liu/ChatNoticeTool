@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 
 from agent_config import AgentError, PLATFORMS, digest, read_json, text
-from chatnotice import ReadScope
+from project_core import ReadScope
 
 
 class LocalSource:
@@ -95,7 +95,7 @@ class LocalSource:
         return {'status': 'ready' if not missing else 'authorization_required',
                 'verified_database_count': len(verified), 'missing_database_count': len(missing),
                 'read_chat_bodies': False,
-                'next_actions': [] if not missing else ['source connect --authorize-memory-read --pid <客户端PID>']}
+                'next_actions': [] if not missing else ['python agent_setup.py source connect --source <ID> --authorize-memory-read --pid <本人客户端PID>']}
 
     def connect(self, config, pids, authorized):
         if authorized is not True or not pids or any(type(p) is not int or p <= 0 for p in pids):

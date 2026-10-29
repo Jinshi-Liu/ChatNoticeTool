@@ -14,16 +14,20 @@ from todo_widget import TodoWidget
 class DetailTests(unittest.TestCase):
     def setUp(self):
         import tkinter as tk
-        (ROOT/'runtime').mkdir(exist_ok=True)
-        self.tmp=tempfile.TemporaryDirectory(dir=ROOT/'runtime')
+        self.tmp=tempfile.TemporaryDirectory()
+        self.rules_path=Path(self.tmp.name)/'AGENTS.md'
+        # Keep TodoStore's project-relative paths inside an isolated synthetic project.
+        self.enterContext(patch('todo_store.ROOT',Path(self.tmp.name)))
+        self.enterContext(patch('todo_store.project_path',side_effect=lambda path:Path(self.tmp.name)/path))
         self.store=TodoStore(Path(self.tmp.name)/'todos.sqlite3')
         self.store.upsert('第一项',id='a',due='2026-10-13',due_label='10/13课前',note='原内容')
         self.store.upsert('第二项',id='b',note='内容B')
         self.root=tk.Tk(); self.root.withdraw()
-        self.app=TodoWidget(self.root,self.store)
+        self.app=TodoWidget(self.root,self.store,rules_path=self.rules_path)
         self.root.update()
     def tearDown(self):
         for editor in list(self.app.details_windows.values()): editor.close(force=True)
+        if self.app.rules_window is not None: self.app.rules_window.close(force=True)
         self.app.close(); self.tmp.cleanup()
     def open(self,id):
         editor=self.app.details(self.store.get(id)); editor.window.withdraw()
@@ -85,8 +89,9 @@ class DetailTests(unittest.TestCase):
     def test_minimal_layout_and_hand_drawn_icons(self):
         a=self.open('a')
         self.assertFalse(a.status.winfo_manager())
-        self.assertFalse(self.app.subtitle.winfo_manager())
-        self.assertFalse(self.app.status.winfo_manager())
+        self.assertFalse(hasattr(self.app,'subtitle'))
+        self.assertFalse(hasattr(self.app,'status'))
+        self.assertFalse(hasattr(self.app,'toast_until'))
         self.assertEqual(a.complete_button.kind,'check')
         self.assertGreaterEqual(self.app.pin_button.size,48)
         self.assertTrue(all(self.app.pin_button.type(i)=='line' for i in self.app.pin_button.find_withtag('icon')))
@@ -182,7 +187,7 @@ class DetailTests(unittest.TestCase):
         with patch('todo_widget.messagebox.askyesno',return_value=True):
             self.app.canvas.click_row('a',SimpleNamespace(x=(left+right)/2,y=(top+bottom)/2))
         self.assertTrue(self.store.get('a')['removed'])
-        self.assertIsNone(self.app.active_menu)
+        self.assertFalse(hasattr(self.app,'active_menu'))
 
     def test_larger_fonts_in_list_and_editor(self):
         a=self.open('a')
@@ -266,10 +271,10 @@ class DetailTests(unittest.TestCase):
         self.assertEqual(self.root.minsize(),(220,160))
         self.assertEqual(a.window.minsize(),(220,160))
         self.assertTrue(self.app.compact); self.assertTrue(a.compact); self.assertFalse(b.compact)
-        for button in (self.app.add_button,self.app.pin_button,a.complete_button,a.pin_button):
+        for button in (self.app.document_button,self.app.add_button,self.app.pin_button,a.complete_button,a.pin_button):
             self.assertTrue(button.winfo_viewable())
             self.assertEqual(button.size,28)
-        for button in (self.app.add_button,self.app.pin_button):
+        for button in (self.app.document_button,self.app.add_button,self.app.pin_button):
             self.assertLessEqual(button.winfo_rootx()+button.winfo_width(),self.root.winfo_rootx()+self.root.winfo_width())
         self.assertGreater(a.note.winfo_height(),20)
         row=self.app.canvas.rows['a']
@@ -297,32 +302,94 @@ class DetailTests(unittest.TestCase):
         self.assertEqual(int(self.root.tk.splitlist(a.note.cget('font'))[1]),-30)
         self.assertEqual(self.app.canvas.itemcget(row['preview'],'state'),'normal')
 
-    def test_small_header_four_controls_share_one_alignment(self):
-        self.root.geometry('367x180+20+20'); self.root.deiconify(); self.root.update()
+    def assert_header_geometry(self):
         segment=self.app.segment
-        self.assertEqual(segment.pack_info()['side'],'left')
-        y=segment.winfo_rooty()+segment.coords(segment.left)[1]
-        self.assertEqual(segment.coords(segment.left)[1],segment.coords(segment.right)[1])
-        for button in (self.app.pin_button,self.app.add_button):
-            self.assertAlmostEqual(button.winfo_rooty()+button.winfo_height()/2,y,delta=2)
-            self.assertLessEqual(button.winfo_rootx()+button.winfo_width(),self.root.winfo_rootx()+self.root.winfo_width())
-        self.assertEqual(int(self.root.tk.splitlist(segment.itemcget(segment.left,'font'))[1]),-32)
+        buttons=(self.app.document_button,self.app.pin_button,self.app.add_button)
+        root_left=self.root.winfo_rootx(); root_right=root_left+self.root.winfo_width()
+        boxes=[]
+        for item in (segment.left,segment.left_count,segment.right,segment.right_count):
+            x1,y1,x2,y2=segment.bbox(item)
+            boxes.append((segment.winfo_rootx()+x1,segment.winfo_rooty()+y1,
+                          segment.winfo_rootx()+x2,segment.winfo_rooty()+y2))
+        for button in buttons:
+            self.assertTrue(button.winfo_viewable())
+            boxes.append((button.winfo_rootx(),button.winfo_rooty(),
+                          button.winfo_rootx()+button.winfo_width(),
+                          button.winfo_rooty()+button.winfo_height()))
+        for box in boxes:
+            self.assertGreaterEqual(box[0],root_left)
+            self.assertLessEqual(box[2],root_right)
+            self.assertGreaterEqual(box[1],self.root.winfo_rooty())
+            self.assertLessEqual(box[3],self.root.winfo_rooty()+self.root.winfo_height())
+        for index,a in enumerate(boxes):
+            for b in boxes[index+1:]:
+                self.assertTrue(a[2]<=b[0] or b[2]<=a[0] or a[3]<=b[1] or b[3]<=a[1],(a,b))
+        self.assertLess(boxes[4][0],boxes[5][0]); self.assertLess(boxes[5][0],boxes[6][0])
+        centers=[(box[1]+box[3])/2 for box in boxes[4:]]
+        self.assertAlmostEqual(min(centers),max(centers),delta=1)
+        if int(self.app.toolbar.grid_info()['row'])==0:
+            self.assertAlmostEqual(centers[0],segment.winfo_rooty()+segment.coords(segment.left)[1],delta=2)
+        else:
+            self.assertGreaterEqual(boxes[4][1],max(box[3] for box in boxes[:4]))
+        self.assertEqual(int(self.root.tk.splitlist(segment.itemcget(segment.right,'font'))[1]),-32)
 
-    def test_extreme_narrow_header_is_aligned_and_reflows_without_font_change(self):
+    def test_header_five_controls_share_one_alignment_when_wide(self):
+        for width,height in ((367,180),(500,700)):
+            self.root.geometry(f'{width}x{height}+20+20'); self.root.deiconify(); self.root.update()
+            self.assertEqual(self.app.segment.winfo_manager(),'grid')
+            self.assertEqual(int(self.app.toolbar.grid_info()['row']),0)
+            self.assert_header_geometry()
+
+    def test_header_real_geometry_at_each_width_and_high_dpi(self):
         self.root.deiconify()
-        for width in (220,250,367,240,280):
-            self.root.geometry(f'{width}x180+20+20'); self.root.update()
-            segment=self.app.segment
-            if width<280:
-                self.assertEqual(segment.pack_info()['side'],'top')
-                for button,item in ((self.app.pin_button,segment.left),(self.app.add_button,segment.right)):
-                    box=segment.bbox(item)
-                    center=segment.winfo_rootx()+(box[0]+box[2])/2
-                    self.assertAlmostEqual(button.winfo_rootx()+button.winfo_width()/2,center,delta=3)
-            else: self.assertEqual(segment.pack_info()['side'],'left')
-            self.assertAlmostEqual(self.app.pin_button.winfo_rooty()+self.app.pin_button.winfo_height()/2,
-                                   self.app.add_button.winfo_rooty()+self.app.add_button.winfo_height()/2,delta=1)
-            self.assertEqual(int(self.root.tk.splitlist(segment.itemcget(segment.right,'font'))[1]),-32)
+        old=float(self.root.tk.call('tk','scaling'))
+        try:
+            for scale in (1,1.5,2,3):
+                self.root.tk.call('tk','scaling',scale)
+                for width in (220,250,280,367,500,220):
+                    with self.subTest(scale=scale,width=width):
+                        self.root.geometry(f'{width}x160+20+20'); self.root.update()
+                        self.app.layout_header(); self.root.update()
+                        self.assert_header_geometry()
+                        required=int(self.app.segment.cget('width'))+8+3*30+8
+                        self.assertEqual(int(self.app.toolbar.grid_info()['row']),int(required>width-16))
+        finally: self.root.tk.call('tk','scaling',old)
+
+    def test_document_button_opens_single_modeless_rules_editor(self):
+        editor=self.app.document_button.invoke(); self.root.update()
+        self.assertEqual(self.app.document_button.kind,'document')
+        self.assertIs(self.app.document_button.invoke(),editor)
+        self.assertIsNone(self.root.grab_current())
+        self.assertEqual(str(editor.window.transient()),'')
+        self.assertFalse(self.rules_path.exists())
+        self.assertEqual(editor.value(),'')
+        self.assertTrue(all(self.app.document_button.type(i)=='line'
+                            for i in self.app.document_button.find_withtag('icon')))
+        self.app.checkbuttons['b'].invoke()
+        self.assertTrue(self.store.get('b')['done'])
+        editor.close()
+        self.assertIsNot(self.app.open_rules(),editor)
+
+    def test_rules_are_not_read_during_startup_render_or_poll(self):
+        import tkinter as tk
+        self.app.close()
+        self.root=tk.Tk(); self.root.withdraw()
+        with patch('rules_editor.RulesEditor.read_disk',side_effect=AssertionError('unexpected rules read')) as read:
+            self.app=TodoWidget(self.root,self.store,rules_path=self.rules_path)
+            self.root.update(); self.app.render()
+            self.root.after_cancel(self.app.poll_id)
+            self.app.poll()
+            read.assert_not_called()
+        self.assertIsNone(self.app.rules_window)
+
+    def test_main_close_can_be_cancelled_by_rules_draft(self):
+        editor=self.app.open_rules(); editor.text.insert('1.0','未保存规则')
+        with patch('rules_editor.messagebox.askyesnocancel',return_value=None): self.app.close()
+        self.assertFalse(self.app.closed); self.assertTrue(editor.window.winfo_exists())
+        self.assertFalse(self.rules_path.exists())
+        with patch('rules_editor.messagebox.askyesnocancel',return_value=True): self.app.close()
+        self.assertTrue(self.app.closed)
+        self.assertEqual(self.rules_path.read_text(encoding='utf-8'),'未保存规则')
 
     def test_small_detail_size_remembered_per_task(self):
         a=self.open('a'); a.window.geometry('220x160+20+20'); a.window.deiconify(); self.root.update()
@@ -343,7 +410,7 @@ class DetailTests(unittest.TestCase):
         import tkinter as tk
         self.app.close()
         self.store.set_setting('geometry','220x160+20+20')
-        self.root=tk.Tk(); self.app=TodoWidget(self.root,self.store); self.root.update()
+        self.root=tk.Tk(); self.app=TodoWidget(self.root,self.store,rules_path=self.rules_path); self.root.update()
         self.assertEqual((self.root.winfo_width(),self.root.winfo_height()),(220,160))
         self.assertTrue(self.app.compact)
 

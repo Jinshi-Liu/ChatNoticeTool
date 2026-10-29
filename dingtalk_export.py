@@ -12,7 +12,7 @@ from pathlib import Path
 import re
 
 from agent_config import AgentError, digest, text
-from chatnotice import LOCAL_TZ
+from project_core import LOCAL_TZ
 
 GROUP_CHAT = 2
 

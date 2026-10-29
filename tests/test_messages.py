@@ -1,5 +1,7 @@
 from __future__ import annotations
 from pathlib import Path
+from contextlib import contextmanager
+from unittest.mock import patch
 import hashlib
 import sqlite3
 import sys
@@ -7,7 +9,7 @@ import unittest
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 import messages
-from chatnotice import ReadScope
+from project_core import ReadScope
 
 
 def encode_varint(value):
@@ -97,11 +99,23 @@ class MessageTests(unittest.TestCase):
             self.assertEqual(result[0]['sender_username'],'wxid_sender')
         finally: conn.close()
 
-    def test_unknown_message_type_preserved_in_raw_encoding(self):
-        value={'payload':b'\x00\xff','message_type':123456}
-        encoded=messages.json_safe(value)
-        self.assertEqual(encoded['message_type'],123456)
-        self.assertEqual(encoded['payload']['encoding'],'base64')
+    def test_unknown_message_type_preserved_without_raw_row_archive(self):
+        @contextmanager
+        def opened(*args):
+            yield object(), {'synthetic': True}
+        row = {'message_id': 1, 'timestamp': 100, 'group_id': '123',
+               'message_type': 123456, 'payload': field(99999, b'\x00\xff')}
+        request = {'confirmed': True, 'scopes': [{'platform': 'qq', 'group_ids': ['123'], 'since': 100, 'until': 200}],
+                   'groups': [{'platform': 'qq', 'group_id': '123', 'name': 'synthetic'}]}
+        with patch.object(messages, 'open_database', opened), patch.object(messages, 'selected_qq', return_value=[row]):
+            report = messages.read_selected({}, request)
+        message = report['messages'][0]
+        self.assertEqual(message['message_type_code'], 123456)
+        self.assertEqual(message['type'], 'qq_type_123456')
+        self.assertEqual(message['parts'][0]['unknown_fields'], [99999])
+        self.assertEqual(message['body_status'], 'nontext_or_unknown')
+        self.assertNotIn('_raw', report)
+        self.assertFalse(hasattr(messages, 'json_safe'))
 
 
 if __name__=='__main__': unittest.main()

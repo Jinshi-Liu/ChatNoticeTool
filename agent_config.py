@@ -9,7 +9,7 @@ from pathlib import Path
 import time
 import uuid
 
-from chatnotice import ROOT, parse_bound
+from project_core import ROOT, parse_bound
 
 SCHEMA_VERSION = 1
 MAX_INPUT = 1024 * 1024
@@ -122,7 +122,7 @@ class AgentConfig:
         with self.locked():
             value = self.load()
             if type(payload.get('expected_revision')) is not int or payload['expected_revision'] != value['revision']:
-                raise AgentError('config_conflict', '配置已变化，请重新预览', ['inspect'])
+                raise AgentError('config_conflict', '配置已变化，请重新预览', ['python agent_setup.py inspect'])
             result = update(value)
             value['revision'] += 1
             value['updated_at'] = int(time.time())
@@ -136,7 +136,7 @@ class AgentConfig:
         value = value or self.load()
         source = value['sources'].get(source_id)
         if source is None:
-            raise AgentError('source_not_found', '来源不存在', ['source configure'])
+            raise AgentError('source_not_found', '来源不存在', ['python agent_setup.py source configure --input -'])
         return source
 
     def configure_source(self, payload):
@@ -194,7 +194,7 @@ class AgentConfig:
     def plan_groups(self, payload):
         value = self.load()
         if payload.get('expected_revision') != value['revision']:
-            raise AgentError('config_conflict', '配置已变化，请重新inspect')
+            raise AgentError('config_conflict', '配置已变化，请重新运行python agent_setup.py inspect')
         rows = self.normalize_groups(payload, value)
         return {'expected_revision': value['revision'], 'changes': [
             {'before': value['groups'].get(g['key']), 'after': g} for g in rows],
@@ -223,7 +223,7 @@ class AgentConfig:
         if keys is None:
             keys = [k for k, g in value['groups'].items() if g['enabled']]
         if not keys or len(keys) != len(set(keys)):
-            raise AgentError('groups_required', '请选择已授权群', ['groups plan'])
+            raise AgentError('groups_required', '请选择已授权群', ['python agent_setup.py groups plan --input -'])
         result = []
         for key in keys:
             row = value['groups'].get(key)

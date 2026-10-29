@@ -9,7 +9,7 @@ import time
 import uuid
 
 from agent_config import AgentConfig, AgentError, digest, encode, private_path, text
-from chatnotice import ROOT
+from project_core import ROOT
 from wechat_content import compact_message, describe
 
 APP_ID = 0x434E4131
@@ -141,8 +141,11 @@ class ProcessingStore:
             for source_id, report in reports.items():
                 source = sources[source_id]
                 choices = [w for w in windows if w['source_id'] == source_id and w['until'] > w['since']]
+                choices_by_group = {}
+                for window in choices:
+                    choices_by_group.setdefault(window['group_id'], []).append(window)
                 for message in report['messages']:
-                    window = next((w for w in choices if w['group_id'] == message['group_id'] and
+                    window = next((w for w in choices_by_group.get(message['group_id'], ()) if
                                    w['since'] <= message['timestamp'] < w['until']), None)
                     if window is None or message['platform'] != source['platform']:
                         raise AgentError('out_of_scope', '来源返回了超出授权范围的消息')
@@ -173,8 +176,9 @@ class ProcessingStore:
             db.execute('INSERT INTO batches VALUES(?,?,?,?,?,?)',
                        (batch_id, int(time.time()), encode(rules), encode(sources), encode(windows), int(historical)))
             ordinal = 0
+            windows_by_key = {w['group_key']: w for w in windows}
             for group in groups:
-                upper = next(w['target_until'] for w in windows if w['group_key'] == group['key'])
+                upper = windows_by_key[group['key']]['target_until']
                 rows = db.execute('''SELECT * FROM messages WHERE group_key=? AND timestamp>=? AND timestamp<?
                                      AND (processed_hash IS NULL OR processed_hash!=content_hash)
                                      ORDER BY timestamp,message_key''', (group['key'], group['since'], upper))
@@ -326,7 +330,7 @@ class ProcessingStore:
                       'read_windows': batch['windows'], 'used_cached_export': bool(batch['historical']),
                       'more_history': any(w['more_history'] for w in batch['windows']),
                       'all_attachment_contents_processed': False,
-                      'next_actions': ['processing commit'] if items else []}
+                      'next_actions': ['write --input -'] if items else []}
             if any('history_available_before' in w for w in batch['windows']):
                 result['history_notice'] = '首次默认读取最近一个max_days窗口；较早授权历史尚未扫描，可用显式--since回补，不代表不存在旧消息'
             if batch['historical']:

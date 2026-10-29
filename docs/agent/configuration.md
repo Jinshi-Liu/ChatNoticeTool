@@ -1,72 +1,87 @@
 # 配置指南
 
-## 打开项目即可使用规则
+工具用法见 [README](../../README.md) 和 `--help`。根目录 `AGENTS.md` 默认空白，由用户自行填写；它不是安装说明，也不替代来源授权。
 
-组件是项目中的Python程序，根目录 `AGENTS.md` 是简短操作入口。支持项目规则的Agent在项目目录中启动时会自动加载，不需要安装Skill或输入专用斜杠命令。不同宿主的规则发现方式可能不同；不支持自动加载时，明确让Agent读取该文件。
+## 1. 定位环境
 
-以pi为例，在组件目录启动：
+在已知项目位置运行：
 
 ```text
-cd <组件绝对目录>
-pi
+python -B -X utf8 <项目>/agent_locator.py
 ```
 
-然后说“帮我配置微信课程群”。已有会话新增规则后可 `/reload` 或重开会话。不修改Agent全局设置，也不把组件私有数据复制到其规则目录。
+返回的 `argv_prefix` 使用项目 Python 调用 `agent_cli.py`。配置工具使用同一个 Python，脚本换为 `<项目>/agent_setup.py`：
 
-在其他项目中工作时，Agent不会扫描整盘发现本组件；请明确提供组件位置并让它读取 `<组件>/AGENTS.md`。定位使用 `<组件>/agent_locator.py`，不依赖当前工作目录，优先选已有项目虚拟环境。必要时加 `--root`、`--python`；`--remember` 仅将位置保存到私有 `state/component-location.json`。也可显式设置 `CHATNOTICE_HOME`，但不自动修改用户全局环境变量。
+```text
+<项目Python> -B -X utf8 <项目>/agent_setup.py inspect
+<项目Python> -B -X utf8 <项目>/agent_setup.py init
+```
 
-已有旧Skill安装可由用户在对应宿主中停用或移除，本项目不自动删除外部Agent文件或旧私有定位记录。
+`init` 补齐缺失配置，不覆盖已有配置、待办或用户填写的 `AGENTS.md`。桌面初始化入口 `local_setup.py` 也保留。
 
-## 一次对话应确认的信息
+## 2. 选择来源
 
-1. 本人使用的客户端和账号，组件目录及Python位置。
-2. 数据库与媒体目录：可使用有界候选或用户提供的位置；候选不是验证结果。
-3. 是否需要本次只读取钥，以及当前本人客户端主进程PID。不自动猜PID或关闭安全软件。
-4. 群候选：准确名称、群ID、来源账号；同名或多账号歧义要列候选供选择。
-5. 每群规则：图片/文字/文档习惯、关注主题、需要保留哪些字段、不确定信息如何询问。不要强制所有群使用同一模板。
-6. 历史授权起点、可选结束时刻、单次最大跨度。建议首次最近3天、单次7天，必须用确定日期确认；后续按需读取。
-7. 内容交付：当前Agent/服务的接收方说明、正文、图片、文档分别确认。在线Agent分析会使选定内容离开本机；组件自身不上传不代表Agent不会上传。
+QQ / 微信来源需要本人账号的数据库和媒体目录。可提供绝对路径，或用有界候选发现：
 
-将配置差异简短展示后一次确认，不对每个字段重复提问。来源配置与群规则通过工具写入，配置版本变化要重新预览。
+```text
+source candidates --platform wechat [--base ABS_DIR]
+source configure --input -
+source check --source SOURCE_ID
+```
 
-## 钉钉实验来源
+以上均为 `agent_setup.py` 子命令。候选只帮助找位置，不表示账号或格式已验证。来源按平台和数据库路径隔离，换账号目录不会继承旧授权。
 
-V3本地群文本使用同一配置/授权与read/write接口，必须明确本人account_dir和真实uid，不读账号日志猜UID，不扫描内存；尚未实测客户端版本，不支持V2或媒体。步骤及无页MAC等重要限制见[钉钉实验读取](dingtalk.md)。
+缺少凭据时，打开并登录自己的客户端，确认主进程 PID，再对本次取钥授权：
 
-## 通用导入来源
+```text
+source connect --source SOURCE_ID --pid PID --authorize-memory-read
+```
 
-用户只提供文件、不需要读取客户端时，配置`platform:"import"`，可选`collection:"inbox"`、name，不提供客户端paths。collection和后续group_id只是本地收件箱标识，不要求真实账号/群/原始来源。先配置授权分组，再`read --group <key> --file <绝对路径> --confirm`；完整格式、限制与示例见[通用导入](importing.md)。QQ/微信的候选路径、check和取钥流程不适用于文件收件箱。
+保存消息读取权限不会授权扫描内存。有效凭据可复用，不需要每次重新取钥。
 
-## 私有数据在哪里
+仅处理用户文件时，配置 `platform:"import"`、可选 `collection:"inbox"` 和名称，不需要客户端路径、真实账号或取钥。见[文件导入](importing.md)。
+
+钉钉实验来源使用 `platform:"dingtalk"`、本人 `uid` 和 `paths.account_dir`，复用相同 read/write；配置示例与当前能力见[钉钉 V3 实验读取](dingtalk.md)。
+
+## 3. 选群与保存授权
+
+```text
+groups list --source SOURCE_ID [--contains 群名片段]
+groups plan --input -
+groups apply --input -
+```
+
+`list` 只查元数据，按 `next_offset` 翻页。同名群用来源账号和准确群ID区分。
+
+群配置包含：
+
+- 来源和准确群ID；文件导入可自行命名本地分组。
+- 授权起点、可选终点、单次跨度 `max_days`（默认7天）。首次默认读近期窗口，更早历史可显式回补。
+- 接收 Agent/服务，以及正文、图片、文档分别交付的权限。在线 Agent 会接收选定内容。
+- 可选的分群 `instructions`，只保存用户提供的处理说明。
+
+参数和授权已确定时可直接 `apply`；`plan` 仅用于需要预览差异的情况，不是必经步骤。已明确的同一范围不重复询问。JSON schema、版本号和撤销请求见[命令参考](commands.md)。来源权限保存在配置中，手写 `AGENTS.md` 不会改变这些权限。
+
+## 4. 日常与规则编辑
+
+已有授权后直接 `agent_cli.py read`，理解内容后 `write --input -`；不需要反复检查或列群。
+
+UI 顶部“文档”打开根 `AGENTS.md` 的简单文本窗口，Ctrl+S 保存，初始0字，不自动补充规则。宿主是否加载、何时重新加载由当前 Agent 决定；保存不代表所有模型立即采用。
+
+## 私有数据与迁移
 
 | 位置 | 用途 |
 | --- | --- |
-| `config.json` | 保留旧手工入口的客户端配置 |
-| `state/agent-config.json` | 每来源路径、群授权与处理说明、安装位置 |
-| `state/secrets.dpapi` | 现有Windows用户绑定凭据，不交给Agent |
-| `state/imports/` | 显式导入的规范化消息及选定附件副本，不要求保留外部原文件 |
-| `state/processing.sqlite3` | 已接收消息、内容版本、批次、未完成阶段、待办关联、附件缓存索引 |
-| `state/todos.sqlite3` | 现有待办、完成/移除状态和偏好；新增幂等操作元数据 |
-| `exports/agent-assets/` | Agent显式申请后准备的本地附件 |
-| `state/agent-inputs/` | Agent编写的私有请求文件，可能含规则和必要任务内容 |
-| `state/component-location.json` | 可选，仅用于定位项目和Python |
+| `config.json` | 本地组件配置 |
+| `state/agent-config.json` | 来源、群授权与分群说明 |
+| `state/secrets.dpapi` | 当前 Windows 用户绑定的凭据 |
+| `state/imports/` | 导入消息与选定附件副本 |
+| `state/processing.sqlite3` | 消息明文、批次、处理阶段、关联及缓存索引 |
+| `state/todos.sqlite3` | 待办、完成/移除状态、偏好与幂等记录 |
+| `exports/agent-assets/` | 准备给 Agent 的附件 |
+| `state/component-location.json` | 可选的项目与 Python 位置记录 |
 
-处理状态库与待办库可能包含聊天正文/个人事项，**不加密**；DPAPI只保护密钥及原入口封存的原始行。不要提交、上传或公开压缩私有目录。撤权阻止工具继续提供消息，但不会擦除此前已经提供给Agent的内容，也不会自动删除用户待办和缓存。
+消息和待办库不由 DPAPI 加密。撤权阻止后续工具访问，不收回 Agent 已接收内容，也不自动删除待办。
 
-## 性能与边界
-
-- 不把“检查所有配置、验证所有密钥、列出所有群”作为每次整理的开场动作。
-- 多群一次read，同来源共用数据库快照；不同微信分片仍分别安全处理。
-- 只分析新消息、变化消息和未完成项目；历史重分析必须显式请求。
-- 附件按需批量准备，未变化资源复用。图片由当前Agent读，不另装OCR或调用第二个模型。
-- 大量消息遵循返回的分页标识，不能为了快截断或只看关键字匹配结果。
-- 24小时重叠窗口只能缓解延迟同步，不能保证任意久以前的晚到消息被发现；用户需要时显式回补。
-- 通用文件导入不依赖Windows API；客户端读取器支持Windows QQ/微信特定本地格式；Python核心不限定必须运行在Windows。Agent可根据用户需求补充其他来源或系统适配，参见[扩展指引](extending.md)；未实现并验证前不声称已支持。
-
-## 管理与迁移
-
-- 原有脚本和待办窗口继续可用，原命令仍需原有逐次确认。新入口只依赖自己已保存的明确授权。
-- 初始化不覆盖旧配置或进度；升级先关闭窗口并备份，再覆盖源码，保留state/exports/config。
-- 换数据库路径会产生新账号来源，不沿用旧群授权。已有群授权引用的来源不能直接改媒体/账号目录，先撤销相关授权再配置。
-- 改规则不自动复算历史；已有同ID待办不应被重复创建，必要时用关联和baseline修订。
-- 移动组件后重新定位；DPAPI缓存不能迁移到其他Windows用户。旧状态备份含版本，更高版本拒绝降级写入。
+升级前关闭窗口，备份并保留 `config.json/state/exports` 和自己的 `AGENTS.md`，再更新源码；不运行清理来升级。
+移动目录后重新定位；DPAPI凭据不能迁移到其他 Windows 用户。更改已授权来源路径时，先处理相关群授权，再重新配置。

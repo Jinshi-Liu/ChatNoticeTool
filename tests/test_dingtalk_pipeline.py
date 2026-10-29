@@ -19,6 +19,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 import agent_cli
 from agent_config import AgentError
 from agent_service import AgentService
+from agent_setup import SetupService, build_parser as setup_parser
 from agent_sources import candidates, get_source
 import database_reader
 import dingtalk_export as source
@@ -68,10 +69,11 @@ class DingTalkTests(unittest.TestCase):
         self.project.mkdir()
         (self.account / 'DBFiles').mkdir(parents=True)
         (self.account / 'user_config').write_bytes(base64.b64encode(json.dumps({'salt': SALT}).encode()))
-        self.patches = [patch('chatnotice.ROOT', self.project), patch('todo_store.ROOT', self.project), patch('time.time', return_value=NOW)]
+        self.patches = [patch('project_core.ROOT', self.project), patch('todo_store.ROOT', self.project), patch('time.time', return_value=NOW)]
         for p in self.patches:
             p.start()
         self.service = AgentService(self.project)
+        self.setup = SetupService(self.project)
         self.client = self.account / 'DBFiles/dingtalk.db'
         self.key = probe.derive_key(UID, SALT)
         self.writers = []
@@ -140,10 +142,10 @@ class DingTalkTests(unittest.TestCase):
     def test_groups_only_metadata_and_explicit_uid(self):
         self.fixture()
         self.configure()
-        result = self.service.source_action(self.source['id'], 'groups')
+        result = self.setup.source_action(self.source['id'], 'groups')
         self.assertEqual({g['group_id'] for g in result['groups']}, {'G1', 'G2'})
         self.assertFalse(result['read_chat_bodies'])
-        checked = self.service.source_action(self.source['id'], 'check')
+        checked = self.setup.source_action(self.source['id'], 'check')
         self.assertEqual(checked['status'], 'format_candidate')
         self.assertFalse(checked['read_chat_bodies'])
         with self.assertRaises(AgentError):
@@ -379,7 +381,7 @@ class DingTalkTests(unittest.TestCase):
         self.service.read()
         self.assertIs(socket.socket, original)
         with self.assertRaises(AgentError):
-            self.service.source_action(self.source['id'], 'connect', pids=[1], authorized=True)
+            self.setup.source_action(self.source['id'], 'connect', pids=[1], authorized=True)
 
     def test_candidates_metadata_only_and_bounded(self):
         self.fixture()
@@ -393,6 +395,8 @@ class DingTalkTests(unittest.TestCase):
         self.assertIn('{read,write}', help)
         self.assertNotIn('dingtalk_probe', help)
         self.assertTrue(get_source('dingtalk').capabilities['experimental'])
+        args = setup_parser().parse_args(['source', 'candidates', '--platform', 'dingtalk'])
+        self.assertEqual(args.platform, 'dingtalk')
 
 
 if __name__ == '__main__':

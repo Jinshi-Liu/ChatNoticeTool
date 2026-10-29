@@ -1,109 +1,62 @@
-# 项目结构与运行边界
+# 项目结构
 
-## 独立入口
-
-| 使用场景 | 入口 | 是否读取聊天 |
-| --- | --- | --- |
-| 只用桌面待办 | `todo-widget.cmd` / `todo_widget.py` | 否，只轮询自己的待办SQLite |
-| 脚本管理任务 | `todo_store.py` | 否，只操作自己的待办SQLite |
-| 按需读消息 | `read_chats.py` / `chatnotice.py export` | 是，要求准确群、明确时间和逐次确认 |
-| 外部Agent + 项目规则 | `AGENTS.md` / `agent_cli.py` / `docs/agent/` | 按保存的授权读取客户端，或仅处理用户显式导入的文件 |
-
-消息导出不会自动触发AI分析或添加任务。支持项目规则的Agent自动加载根目录`AGENTS.md`，详细说明按需读取，组件不内置或调用模型。内存取钥要求逐次授权，普通读取不会自行启动扫描；只有新Agent入口接受已保存的消息读取授权，旧入口保持逐次确认。
-
-## 数据路径
+## 数据流
 
 ```text
-本人授权的本地客户端
-  ├─ 明确授权、校验进程的只读取钥 → DPAPI密钥缓存
-  └─ 已落盘加密数据库 → 临时快照/认证解密/WAL校验
-                         → 只读SQLite/指定群和时间筛选
-                         → 私有 exports/<批次>/
-                           ├─ 用户可选：处理引用的本地附件
-                           └─ 用户可选：自己整理/交给助手分析
-                                          → todo_store.py
-                                          → state/todos.sqlite3
-                                          → 桌面待办
+QQ / 微信本地数据库 ── 快照、认证解密、WAL校验 ─┐
+钉钉 V3 本地群文本 ── 实验来源、快照解密 ─────┤
+用户选择的文件 ── 导入收件箱 ─────────────────┤
+                                            ↓
+agent_setup.py ── 来源、群与内容交付授权 → agent_cli.py read
+                                            ↓
+                              处理库、分页、正文与附件路径
+                                            ↓
+                                    外部Agent理解 / 看图
+                                            ↓
+                                  agent_cli.py write
+                                     ↓             ↓
+                               待办与操作ID     处理结果与关联
+                                     ↓
+                                  桌面待办
 ```
 
-多个会话可能共享加密数据库页；临时副本可能含其他会话页面，但查询、导出和附件选择必须限制在明确授权范围。临时数据库正常退出后清除；异常退出遗留风险见 `SECURITY.md` 和README。
+组件不调用模型。`AGENTS.md` 是用户自行填写的规则文件，默认空白；UI“文档”窗口只负责编辑和保存，加载方式由 Agent 宿主决定。
 
-`read_chats.py --from-export` 是另一条显式路径：校验并筛选现有历史导出，不重新检查客户端是否已有新消息。缓存缺失或覆盖不足会失败，不自动扩大范围或重新取钥。
-
-## 源码职责
-
-保持根目录脚本入口，避免搬动模块后破坏已有启动器、配置相对路径和数据位置。
+## 入口与职责
 
 | 层 | 文件 | 职责 |
 | --- | --- | --- |
-| 入口/范围 | `chatnotice.py`, `read_chats.py` | 配置、诊断、确认、群ID/时间验证、导出和显式历史复用 |
-| 取钥/密码学 | `memory_reader.py`, `cipher.py` | 经授权的只读扫描、DPAPI、页面认证与解密 |
-| 数据库 | `database_reader.py` | 稳定临时快照、提交WAL校验/重放、只读打开、一致性检查和清理 |
-| 消息 | `groups.py`, `messages.py` | 本地群元数据、范围内消息解码、未知类型保留和媒体秘密脱敏 |
-| 附件 | `attachments.py`, `document_formats.py` | 受限本地路径、大小/哈希校验、图片与文档解析；不下载或执行内容 |
-| 待办模型 | `todo_store.py`, `initial-todos.json` | 独立SQLite、稳定ID、状态保留、字段级并发合并；公开版初始为空 |
-| 主窗口 | `todo_widget.py`, `widget_ui.py` | 持续复用列表行、滚动、主窗口工具栏、轮询自己的任务库 |
-| 详情/绘制 | `todo_detail.py`, `glass_style.py`, `todo.ico` | 无模态编辑、统一纵向滚动、图标、独立置顶与窗口几何 |
-| 生命周期 | `local_setup.py`, `cleanup.py`, `*.cmd` | 不覆盖配置的初始化、所有权限定清理和本地启动 |
-| 验证 | `tests/`, `.github/workflows/tests.yml` | 合成数据单元测试、Windows完整CI及三系统导入CI，不接触真实客户端 |
+| 日常接口 | `agent_cli.py` | 仅 `read/write`，输出版本化 JSON；消息、文件、附件与独立待办共用入口 |
+| 配置 | `agent_setup.py`, `agent_config.py` | 检查、初始化、来源连接、群授权预览与保存；单次授权取钥 |
+| 定位 | `agent_locator.py` | 定位项目 Python，返回指向 `agent_cli.py` 的 `argv_prefix` |
+| 服务与来源 | `agent_service.py`, `agent_sources.py`, `agent_imports.py` | 请求门面、显式工厂注册、客户端读取与文件收件箱 |
+| 钉钉实验来源 | `dingtalk_export.py`, `dingtalk_probe.py` | V3 本地群文本、UID 配置与快照解密，复用同一 read/write |
+| 公共基础 | `project_core.py` | 公共配置、范围及路径等基础函数 |
+| 密钥与数据库 | `memory_reader.py`, `cipher.py`, `database_reader.py` | 有界只读取钥、DPAPI、临时快照、页面认证、WAL与一致性检查 |
+| 消息 | `groups.py`, `messages.py`, `wechat_content.py` | 群元数据、范围读取、解析与精简视图 |
+| 附件 | `attachments.py`, `document_formats.py`, `agent_assets.py` | 本地资源定位、转换、授权检查与缓存 |
+| 处理进度 | `agent_processing.py` | 消息版本、获取游标、批次、分页、处理阶段和待办关联 |
+| 待办 | `todo_store.py` | SQLite待办、稳定ID、幂等操作和字段基线；不是独立CLI |
+| 窗口 | `todo_widget.py`, `widget_ui.py`, `todo_detail.py`, `glass_style.py` | 列表与编辑、规则文本窗口、独立置顶及窗口偏好 |
+| 生命周期 | `local_setup.py`, `cleanup.py`, `*.cmd` | 补齐私有配置、所有权限定清理、本地启动 |
+| 验证与范例 | `tests/`, `examples/adapters/` | 合成测试、read/write基准、受信代码适配器范例 |
 
-## Agent 快速处理路径
+`groups/messages/attachments/memory_reader` 是内部模块，不提供旧的独立CLI包装。详细命令集中在[命令参考](docs/agent/commands.md)。
 
-```text
-AGENTS.md → agent_locator.py定位组件/项目Python → agent_cli.py read
-  → 校验当前群授权 → 按来源账号合批，每个所需数据库只快照一次
-  → 新/变化消息与未完成项 → 处理库持久接收 → 有界分页
-  → 精简视图 + 本页已授权图片准备（同批关联资源复用）
-  → 外部Agent理解/看图
-  → agent_cli.py write --input -（批量待办 + 逐项检查 + 批量记账）
-```
+## 状态与恢复
 
-日常只使用read/write两个基础操作；read --todos/--id批量读待办，read --file明确接入用户文件，write也可独立写待办。旧配置/分步工具保留兼容，不作为每轮工作链。`wechat_content.py`仅做技术分类和视图投影，完整脱敏内容保留按需--raw访问，不制定通知业务规则。
+- `read` 按来源账号合批，同批分页复用消息，不重复解密。默认只准备本页已授权纯图片，`--attachments` 扩展为本页所有授权媒体。
+- 获取游标表示消息已持久接收，不是分析完成。首次默认取最近 `max_days` 窗口，更早历史显式回补。
+- 消息身份与内容哈希用于去重；未完成项继续返回。`context` 是已处理消息的只读上下文。
+- `write` 合并待办操作与结果提交。待办库和处理库不提供跨库原子事务，通过稳定 `operation_id` 重放恢复；字段 `baseline` 保留用户编辑、完成与移除状态。
+- 批次、分块与附件访问复验当前授权和配置版本；改配置可能使旧批次失效。手写规则文件不替代来源权限。
+- `read --from-export` 校验并筛选已有历史导出，不把历史快照当作当前同步，也不在失败时自动回退读取客户端。
 
-`dingtalk_export.py`是钉钉V3群文本实验来源，复用现有read/write与处理库；`dingtalk_probe.py`只保留稳定快照与受验证WAL回放的内部原语，无独立命令、日志扫描或任务分类。无页MAC的格式限制及合成验证范围见[钉钉说明](docs/agent/dingtalk.md)。
+## 私有资料
 
-`agent_config.py`负责版本化配置、原子写入和群范围；`agent_sources.py`显式注册来源工厂，封装QQ/微信能力及有界候选发现；`agent_imports.py`提供不依赖Windows API的文件收件箱；`agent_processing.py`负责消息版本、获取游标、可恢复批次、分页和关联；`agent_assets.py`负责当前授权下的资源准备和缓存；`agent_service.py`为命令门面，`agent_cli.py`输出版本化JSON。
+`config.json`、`state/`、`exports/`、`runtime/` 与所有权标记留在本机。
+`state/imports/` 保存导入内容及附件副本，处理库保存选定消息明文，待办库保存事项与偏好；DPAPI只保护相应凭据，不加密这些消息库。
 
-`messages.read_selected`支持同一平台不同群窗口共享快照，Agent路径不重复生成旧入口的完整导出或原始行封存；不落盘原始数据库行。处理库明文保存选定消息，正常退出仍保留，必须按私有资料管理。
+更新保留个人资料和用户填写的 `AGENTS.md`；初始化不覆盖已有内容。清理先预览再确认，不作为升级步骤。
 
-获取游标只代表消息已持久接收，不代表已分析或已扫描全部授权历史。首次没有游标时默认从授权范围内最近max_days窗口开始，并明确提示更早未扫描的历史；显式--since仍按历史窗口回补，不修改授权起点。后续默认重叠24小时（小窗口时缩短）并按账号命名空间、消息身份与内容哈希去重；未完成项继续返回。两个SQLite库不提供跨库原子事务：待办操作ID与结果同事务记录，通过幂等重放恢复“写待办后、提交进度前”的中断。
-
-批次分页、分块、提交、附件缓存复用都会重新校验当前授权及配置版本内容。改规则或撤权使旧批次失效；不自动重分析已完成历史，显式`--reprocess`才重跑指定范围。时间窗口不能保证发现任意晚到历史消息，可显式回补。
-
-同一次read复用处理库对象，同一次write复用已校验的处理库和待办库对象；已有库只读校验身份/版本/必要表及索引，不反复写版本头或建表。提交前仍重新检查授权，待办存在性只在单次校验事务内去重，不跨请求缓存。图片资源缓存按账号/群和资源内容绑定，同群后续引用可以复用原图缓存，但仍复核权限与文件指纹。
-
-常规调用不执行doctor/取钥/列群，也不预处理所有附件。超大消息明确提供内容分块引用，不静默截断。可选的`state/component-location.json`仅保存项目和Python位置，不保存账号或凭据。规则入口保持简短，不把全部命令文档塞进每次会话。
-
-## 通用导入与适配器
-
-read --file（兼容旧import）只接收明确选择的文件及已授权本地分组。JSON、UTF-8文本、图片和文档不要求真实来源/发言者/原始时间；缺失原时间标记timestamp_basis:imported，禁止据此伪造原始发送时间。有来源说明可直接写待办正文，不新增必填来源或追溯功能。
-
-数据先存`state/imports/<命名空间哈希>/messages.sqlite3`及assets，再直接持久登记处理批次，包括旧时间的修订；不推进未经扫描的获取游标。两个库之间中断可通过同文件、稳定ID重试恢复。默认read直接消费已登记的导入队列，不补扫多年空历史；显式--since才扫描已导入库。附件复制/失败可能留下私有孤立资源，归state备份/清理，不自动删除。
-
-AgentConfig、AgentService和附件准备统一通过get_source分派。旧客户端ReadScope不承担新平台校验，新来源实现validate_scope及资源权限。注册仅来自受信代码，不从消息或配置加载模块；JSONL范例在`examples/adapters/`，完整接口见[扩展指引](docs/agent/extending.md)。这不是大型插件系统，也不代表已接入其他厂商或系统的聊天客户端。
-
-## 待办持久化与编辑
-
-- 完成、撤回、移除和恢复与聊天记录分离。普通同ID更新保留已完成/已移除状态，显式恢复才重新展示。
-- 已有详情约1秒停笔保存；新草稿通过保存图标或快捷键明确创建。
-- 每个字段基于编辑基线做并发检查，不用旧整条记录覆盖外部更新或完成状态。
-- 主窗口和各详情独立置顶、独立记住几何；多个详情之间不互相阻塞。
-- 详情用可滚动标题区和固定可视高度的Text正文协作，不按整篇正文长度建立巨大窗口；同一滚动路径/滚动条串联两者。
-- 字号不随缩放改变。主窗口可容纳时四个控件同排；极窄时两行对应列对齐。
-- 正常关闭检查未保存草稿，保存窗口偏好，不强制终止。组件不驻留托盘、不创建启动项。
-
-## 源码与私有资料分离
-
-| 可公开 | 必须保留在本机、不可提交 |
-| --- | --- |
-| Python源码、启动器、示例配置、空初始任务、图标、合成测试、许可证和文档 | `config.json`, `.chatnotice-owned.json`, `state/`, `exports/`, `runtime/`, `.venv/`及密钥/数据库/个人材料 |
-
-`state/`含导入消息/附件、处理与任务进度、偏好和可能的密钥缓存；`exports/`含私有聊天及附件。`.gitignore`只是防误提交，不是数据加密或访问控制。不要把实际导出放入Issue、CI或Release附件。
-
-## 更新与卸载
-
-- 更新：在原安装目录更新源码前正常关闭全部待办窗口，备份私有配置、state和所需exports；保留原有私有文件，不运行清理命令来“升级”。
-- 初始化只创建缺失的配置/标记，不覆盖既有配置与进度；新安装的待办为空。
-- 清理：先看预览，得到明确确认后才能删除项目拥有的文件。原始QQ/微信目录不属于目标；未知顶层文件、链接/联接、改动过的登记快捷方式另有保护。
-
-具体命令见 [README.md](README.md)，版本变化见 [CHANGELOG.md](CHANGELOG.md)。
+[使用说明](README.md) · [扩展接口](docs/agent/extending.md) · [安全说明](SECURITY.md)

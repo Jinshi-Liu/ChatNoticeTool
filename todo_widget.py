@@ -8,19 +8,18 @@ from pathlib import Path
 import re
 import sqlite3
 import sys
-import time
 import tkinter as tk
 from tkinter import messagebox
 
-from todo_store import TodoStore, normalize_due
-from widget_ui import TaskCanvas, SegmentedControl, BG, CARD, INK, MUTED, ACCENT, RED, FONT
+from todo_store import TodoStore
+from widget_ui import TaskCanvas, SegmentedControl, BG, MUTED, ACCENT, RED
 from glass_style import IconButton
 from todo_detail import DetailWindow
+from rules_editor import RulesEditor
+from project_core import WIDGET_MUTEX
 
 TITLE = '群消息待办'
-from chatnotice import WIDGET_MUTEX
 MUTEX = WIDGET_MUTEX
-GREEN = ACCENT  # Backwards-compatible name for existing dialogs/badges.
 
 
 def deadline_badge(task: dict, now: datetime | None = None) -> tuple[str,str]:
@@ -36,20 +35,21 @@ def deadline_badge(task: dict, now: datetime | None = None) -> tuple[str,str]:
     base = label or when.strftime('%m/%d' + (' %H:%M' if len(due)>10 else ''))
     if days == 0: return base + ' · 今天', RED
     if days == 1: return base + ' · 明天', RED
-    return base, GREEN if days <= 7 else MUTED
+    return base, ACCENT if days <= 7 else MUTED
 
 
 class TodoWidget:
-    def __init__(self, root: tk.Tk, store: TodoStore):
+    def __init__(self, root: tk.Tk, store: TodoStore, *, rules_path: Path | None = None):
         self.root, self.store = root, store
+        self.rules_path = Path(rules_path) if rules_path is not None else Path(__file__).resolve().parent/'AGENTS.md'
+        self.rules_window = None
+        self.poll_error = None
         self.view_done = False
         self.signature = None
         self.poll_id = None
         self.closed = False
         self.checkbuttons = {}
         self.checkvars = {}
-        self.toast_until = 0
-        self.active_menu = None
         self.summary_state = None
         self.details_windows = {}
         self.compact=False
@@ -80,13 +80,14 @@ class TodoWidget:
         header = tk.Frame(root,bg=BG); self.header=header
         header.pack(fill='x',padx=24,pady=(18,4))
         self.segment = SegmentedControl(header,self.switch)
-        self.segment.pack(side='left')
-        self.add_button=IconButton(header,'plus',self.editor)
-        self.add_button.pack(side='right',padx=(6,0),pady=(0,5))
-        self.pin_button=IconButton(header,'pin',self.toggle_pin)
-        self.pin_button.pack(side='right',pady=(0,5))
+        header.columnconfigure(0,weight=1)
+        self.toolbar = tk.Frame(header,bg=BG)
+        self.document_button=IconButton(self.toolbar,'document',self.open_rules)
+        self.pin_button=IconButton(self.toolbar,'pin',self.toggle_pin)
+        self.add_button=IconButton(self.toolbar,'plus',self.editor)
+        for column,button in enumerate((self.document_button,self.pin_button,self.add_button)):
+            button.grid(row=0,column=column,padx=(0,4) if column<2 else 0)
         self.update_pin()
-        self.subtitle = tk.Label(root,text='',font=(FONT,-14),fg=MUTED,bg=BG,anchor='w')  # intentionally hidden
 
         body = tk.Frame(root,bg=BG); self.body=body
         body.pack(fill='both',expand=True,padx=(18,10))
@@ -100,31 +101,51 @@ class TodoWidget:
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
         self.scrollbar.bind('<MouseWheel>',self.wheel)
 
-        footer = tk.Frame(root,bg=BG)
-        self.status = tk.Label(footer,text='',font=(FONT,-13),bg=BG,fg=MUTED,anchor='w')
-        # No permanent footer/help text; save failures still use explicit dialogs.
         self.render()
         self.poll_id = root.after(1800,self.poll)
         root.bind('<Configure>',self.resize_layout,add='+')
+        self.layout_header(width,height)
 
     def resize_layout(self,event):
         if event.widget!=self.root or event.width<220 or event.height<160: return
-        value=event.width<420 or event.height<300
-        # Only wrap when unchanged large text + both controls cannot fit.
-        stacked=value and event.width<280
-        layout=(value,stacked,event.width if stacked else None)
-        if layout==getattr(self,'header_layout',None): return
-        self.header_layout=layout; self.compact=value
-        self.header.pack_configure(padx=8 if value else 24,pady=(6,0) if value else (18,4))
-        self.body.pack_configure(padx=(6,4) if value else (18,10))
-        # In the narrow fallback, pin/plus align below the two tab labels.
-        add_padding=(0,event.width-170) if stacked else ((4,0) if value else (6,0))
-        self.add_button.pack_configure(padx=add_padding,pady=(0,9))
-        self.pin_button.pack_configure(padx=(0,76) if stacked else (0,0),pady=(0,9))
-        self.segment.pack_configure(side='top' if stacked else 'left',anchor='w')
-        self.segment.set_compact(value)
-        for button in (self.add_button,self.pin_button): button.set_size(28 if value else 48)
-        self.canvas.set_compact(value)
+        self.layout_header(event.width,event.height)
+
+    def layout_header(self,width=None,height=None):
+        width = width or self.root.winfo_width()
+        height = height or self.root.winfo_height()
+        if width<220 or height<160: return
+        compact=width<420 or height<300
+        self.compact=compact
+        margin=8 if compact else 24
+        size=28 if compact else 48
+        self.segment.set_compact(compact)
+        buttons=(self.document_button,self.pin_button,self.add_button)
+        for column,button in enumerate(buttons):
+            button.set_size(size)
+            # Reserve focus-ring space so keyboard focus cannot change the layout.
+            self.toolbar.columnconfigure(column,minsize=size+2+(4 if column<2 else 0))
+        required=int(self.segment.cget('width'))+8+3*(size+2)+8
+        stacked=required>width-2*margin
+        layout=(compact,stacked,int(self.segment.cget('width')))
+        if layout!=getattr(self,'header_layout',None):
+            self.header_layout=layout
+            self.header.pack_configure(padx=margin,pady=(6,0) if compact else (18,4))
+            self.body.pack_configure(padx=(6,4) if compact else (18,10))
+            self.segment.grid(row=0,column=0,sticky='w')
+            self.toolbar.grid(row=1 if stacked else 0,column=0 if stacked else 1,
+                              sticky='w' if stacked else 'ne',
+                              padx=0 if stacked else (8,0),
+                              pady=(0,2) if stacked else (max(0,28-(size+2)//2),0))
+        self.canvas.set_compact(compact)
+
+    def open_rules(self):
+        if self.rules_window is not None and not self.rules_window.closed:
+            self.rules_window.focus()
+            return self.rules_window
+        self.rules_window=RulesEditor(self.root,self.rules_path)
+        polish_native_frame(self.rules_window.window)
+        self.rules_window.focus()
+        return self.rules_window
 
     def update_pin(self):
         self.pin_button.set_active(self.pinned)
@@ -170,6 +191,7 @@ class TodoWidget:
         if summary!=self.summary_state:
             self.segment.update_state(pending,completed,self.view_done)
             self.summary_state=summary
+            self.layout_header()
         visible = [t for t in tasks if bool(t['done']) == self.view_done]
         self.canvas.sync(visible,empty_text='当前没有待办' if not self.view_done else '完成的事项会放在这里',
                          reset_scroll=reset_scroll)
@@ -177,10 +199,6 @@ class TodoWidget:
         self.checkvars=self.canvas.checkvars
         self.signature = observed
         for detail in list(self.details_windows.values()): detail.refresh_clean()
-
-    def toast(self,text):
-        self.status.configure(text=text,fg=GREEN)
-        self.toast_until=time.monotonic()+5
 
     def toggle_done(self,task,variable):
         done=variable.get()
@@ -191,7 +209,6 @@ class TodoWidget:
             messagebox.showerror('未保存',str(exc),parent=self.root)
             return
         self.render()
-        self.toast('已完成，可在“已完成”中取消勾选' if done else '已恢复到待处理')
 
     def menu(self,task,button):
         self.context_menu(task,None,button.winfo_rootx(),button.winfo_rooty()+button.winfo_height())
@@ -207,7 +224,7 @@ class TodoWidget:
             if detail and not detail.prepare_close(): return
             self.store.remove(task['id'])
             if detail: detail.close(force=True)
-            self.render(); self.toast('已移除；助手更新同一事项不会自动恢复')
+            self.render()
         except (OSError,ValueError,sqlite3.Error) as exc:
             messagebox.showerror('未保存',str(exc),parent=self.root)
 
@@ -238,18 +255,22 @@ class TodoWidget:
                 messagebox.showinfo('待办库已移除','待办数据已被清理，组件将退出。',parent=self.root)
                 self.close(save_geometry=False); return
             if self.signature!=self.file_signature(): self.render()
-            if self.toast_until and time.monotonic()>self.toast_until:
-                self.status.configure(text='自动保存  ·  点击标题查看详情',fg=MUTED); self.toast_until=0
+            self.poll_error=None
         except (OSError,ValueError,sqlite3.Error) as exc:
-            self.status.configure(text='读取失败，请稍后重试',fg=RED)
+            error=str(exc)
+            if error!=self.poll_error:
+                self.poll_error=error
+                messagebox.showerror('读取待办失败',error,parent=self.root)
         self.poll_id=self.root.after(1800,self.poll)
 
     def close(self,save_geometry=True):
         if self.closed: return
+        if self.rules_window is not None and not self.rules_window.prepare_close(): return
         editors=list(self.details_windows.values())
         if save_geometry:
             for detail in editors:
                 if not detail.prepare_close(): return
+        if self.rules_window is not None: self.rules_window.close(force=True)
         for detail in editors: detail.close(force=True,save_geometry=save_geometry)
         if save_geometry and self.store.path.exists():
             try:
@@ -311,8 +332,8 @@ def main():
             try: ctypes.windll.shcore.SetProcessDpiAwareness(1)
             except (AttributeError,OSError): pass
         root=tk.Tk(); root.withdraw()
-        store=TodoStore(); store.seed_once()
-        app=TodoWidget(root,store)
+        store=TodoStore()
+        app=TodoWidget(root,store,rules_path=Path(__file__).resolve().parent/'AGENTS.md')
         root.deiconify()
         polish_native_frame(root)
         root.mainloop()

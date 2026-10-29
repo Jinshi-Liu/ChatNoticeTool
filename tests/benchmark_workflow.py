@@ -28,7 +28,7 @@ from test_agent import NOW
 from test_fast_workflow import WeChatViewsTests, png
 
 
-def trial(mode):
+def trial():
     fixture = WeChatViewsTests('test_plain_quote_is_not_a_pending_attachment')
     fixture.setUp()
     try:
@@ -78,11 +78,8 @@ def trial(mode):
                 patch.object(TodoStore, 'connection', counted_connection(todo_connection)), \
                 patch('attachments.wx_image_key', return_value=(None, None)):
             started = time.perf_counter()
-            page = cli(['read', '--timings'] + (['--no-prepare-images'] if mode == 'separate' else []))
+            page = cli(['read', '--timings'])
             images = page.get('attachments', [])
-            if mode == 'separate':
-                keys = [r['message_key'] for r in page['messages'] if r['message'].get('has_media')]
-                images = cli(['attachments', 'prepare', '--input', '-', '--timings'], {'batch_id': page['batch_id'], 'message_keys': keys})['results']
             if sum(r['status'] == 'prepared' for r in images) != 5:
                 raise AssertionError('All four images and the same-group quote must be prepared')
             operations = [{'operation_id': 'benchmark:homework', 'action': 'create',
@@ -91,17 +88,9 @@ def trial(mode):
             results = [{'message_key': r['message_key'], 'content_hash': r['content_hash'], 'status': 'done',
                         'text_state': 'analyzed', 'attachment_state': 'analyzed' if r['message'].get('has_media') else 'not_applicable'}
                        for r in page['messages']]
-            if mode == 'separate':
-                applied = cli(['todos', 'apply', '--input', '-'], {'batch_id': page['batch_id'], 'operations': operations})
-                if not all(r['ok'] for r in applied['results']):
-                    raise AssertionError(applied)
-                for row in results:
-                    row['task_ids'] = [r['id'] for r in applied['results']]
-                cli(['processing', 'commit', '--input', '-'], {'batch_id': page['batch_id'], 'results': results})
-            else:
-                result = cli(['write', '--input', '-', '--timings'], {'batch_id': page['batch_id'], 'operations': operations, 'results': results})
-                if result['has_failures']:
-                    raise AssertionError(result)
+            result = cli(['write', '--input', '-', '--timings'], {'batch_id': page['batch_id'], 'operations': operations, 'results': results})
+            if result['has_failures']:
+                raise AssertionError(result)
             elapsed = (time.perf_counter() - started) * 1000
         # Verify completion without including verification in the timing/counts.
         if fixture.service.read()['messages'] or len(fixture.service.todo_store().tasks()) != 1:
@@ -118,11 +107,9 @@ def main():
     args = parser.parse_args()
     if not 1 <= args.runs <= 100:
         parser.error('--runs must be 1..100')
-    reports = {}
-    for mode in ('separate', 'combined'):
-        runs = [trial(mode) for _ in range(args.runs)]
-        reports[mode] = {**runs[-1], 'median_ms': round(statistics.median(r['elapsed_ms'] for r in runs), 3),
-                         'min_ms': min(r['elapsed_ms'] for r in runs), 'max_ms': max(r['elapsed_ms'] for r in runs)}
+    runs = [trial() for _ in range(args.runs)]
+    reports = {'combined': {**runs[-1], 'median_ms': round(statistics.median(r['elapsed_ms'] for r in runs), 3),
+                            'min_ms': min(r['elapsed_ms'] for r in runs), 'max_ms': max(r['elapsed_ms'] for r in runs)}}
     print(json.dumps({'synthetic_only': True, 'runs': args.runs,
                       'excludes': ['real_chat_database_decryption', 'model_inference', 'shell_startup'],
                       'results': reports}, ensure_ascii=False, indent=2))

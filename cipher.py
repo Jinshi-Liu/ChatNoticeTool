@@ -8,8 +8,9 @@ import hashlib
 import hmac
 import struct
 
+from project_core import SQLITE_MAGIC
+
 PAGE_SIZE = 4096
-SQLITE_MAGIC = b"SQLite format 3\x00"
 
 
 @dataclass(frozen=True, repr=False)

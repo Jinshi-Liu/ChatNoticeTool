@@ -6,7 +6,7 @@
 
 ## 一次配置，仍然read/write
 
-先确认本人账号目录、真实UID和允许交付给当前Agent的群/时间。使用现有source configure（expected_revision取当前输出）：
+本人账号目录、真实 UID 和群/时间范围确定后，用 `python agent_setup.py source configure --input -` 配置（expected_revision 取当前输出）：
 
 ```json
 {
@@ -21,7 +21,7 @@
 
 上面UID、目录均为虚构占位，必须由用户明确提供。UID不是显示昵称或组织ID；工具不跨账号日志猜UID，不扫描内存，不安装其他解密器。source candidates --platform dingtalk可有界列目录元数据，自定义位置用--base明确指定；不读取重定向配置或全盘搜索。
 
-然后groups list取得群ID；groups plan/apply按[配置指南](configuration.md)确认每群规则与正文交付。单聊、不存在的会话、超出配置范围的请求均拒绝，组名不能替代准确群ID。日常仍是：
+然后用 `agent_setup.py groups list` 取得群 ID，`groups apply` 保存授权；需要预览时再用 `groups plan`，详见[配置指南](configuration.md)。单聊、不存在的会话、超出配置范围的请求均拒绝，组名不能替代准确群ID。日常仍是：
 
 ```text
 read → 当前Agent理解 → write --input -

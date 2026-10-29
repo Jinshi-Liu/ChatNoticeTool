@@ -20,13 +20,17 @@ from agent_config import AgentConfig
 RUNNER = """
 from pathlib import Path
 import sys
-import chatnotice
-chatnotice.ROOT = Path(sys.argv[1])
+import project_core
+project_core.ROOT = Path(sys.argv[1])
 import todo_store
-todo_store.ROOT = chatnotice.ROOT
+todo_store.ROOT = project_core.ROOT
 import agent_cli
 from agent_service import AgentService
-code = agent_cli.main(sys.argv[2:], service=AgentService(chatnotice.ROOT))
+if sys.argv[2] == '@setup':
+    import agent_setup
+    code = agent_setup.main(sys.argv[3:], service=agent_setup.SetupService(project_core.ROOT))
+else:
+    code = agent_cli.main(sys.argv[2:], service=AgentService(project_core.ROOT))
 assert not any(name in sys.modules for name in ('memory_reader', 'database_reader', 'cryptography'))
 raise SystemExit(code)
 """
@@ -125,7 +129,7 @@ class CliProcessTests(unittest.TestCase):
         file = self.root / 'notice.txt'
         file.write_text('仅用于撤权验收的合成通知', encoding='utf-8')
         page = self.cli('read', '--file', str(file), '--group', self.group['key'], '--confirm')
-        self.cli('groups', 'remove', '--input', '-', payload={
+        self.cli('@setup', 'groups', 'remove', '--input', '-', payload={
             'expected_revision': AgentConfig(self.root).load()['revision'], 'confirmed': True, 'group_keys': [self.group['key']]})
         error = self.cli('read', '--batch', page['batch_id'], expected=2)
         self.assertEqual(error['code'], 'scope_denied')

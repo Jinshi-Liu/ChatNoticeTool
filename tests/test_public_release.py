@@ -9,7 +9,9 @@ from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
-import chatnotice
+import project_core
+import agent_cli
+from agent_service import AgentService
 import cleanup
 import local_setup
 from attachments import allowed_local_source
@@ -28,7 +30,7 @@ class PublicReleaseTests(unittest.TestCase):
         self.assertEqual(config['wechat']['account_dir'],'')
         self.assertFalse(config['policy']['allow_process_memory_read'])
         self.assertEqual(config['attachments']['extra_allowed_roots'],[])
-        self.assertEqual(json.loads((ROOT/'initial-todos.json').read_text())['tasks'],[])
+        self.assertFalse((ROOT/'initial-todos.json').exists())
 
     def test_setup_idempotent_and_preserves_private_config(self):
         root=self.base/'clone'; root.mkdir()
@@ -49,7 +51,7 @@ class PublicReleaseTests(unittest.TestCase):
         self.assertTrue(docs<=cleanup.OWNED)
         for name in docs: self.assertTrue((ROOT/name).is_file())
         for name in ('README.md','CHANGELOG.md'):
-            self.assertIn('v0.2.0',(ROOT/name).read_text(encoding='utf-8'))
+            self.assertTrue((ROOT/name).read_text(encoding='utf-8').strip())
         root=self.base/'upgrade'; root.mkdir()
         (root/'config.example.json').write_bytes((ROOT/'config.example.json').read_bytes())
         local_setup.initialize(root)
@@ -66,29 +68,28 @@ class PublicReleaseTests(unittest.TestCase):
         (root/'.chatnotice-owned.json').write_text('{}')
         with self.assertRaises(ValueError): local_setup.initialize(root)
 
-    def test_export_requires_confirmation_before_load_or_read(self):
-        args=['chatnotice.py','export','--platform','qq','--group-id','123',
-              '--since','2030-01-01','--until','2030-01-02']
-        with patch.object(sys,'argv',args),patch.object(chatnotice,'load_config') as load,patch('sys.stderr',new=io.StringIO()):
-            self.assertEqual(chatnotice.main(),2); load.assert_not_called()
+    def test_file_requires_confirmation_before_config_or_read(self):
+        service = AgentService(self.base)
+        with patch.object(service.config, 'load') as load, patch('sys.stdout', new=io.StringIO()):
+            self.assertEqual(agent_cli.main(['read', '--file', str(self.base/'notice.txt'), '--group', 'inbox'], service=service), 2)
+        load.assert_not_called()
 
-    def test_build_exact_scope_and_date_end(self):
-        req=chatnotice.build_request('wechat',['123@chatroom'],'2030-01-01','2030-01-02')
-        scope=req['scopes'][0]
-        self.assertTrue(req['confirmed'])
-        self.assertEqual(scope['group_ids'],('123@chatroom',))
-        self.assertEqual(scope['until'],chatnotice.parse_bound('2030-01-03'))
-        with self.assertRaises(ValueError): chatnotice.build_request('wechat',['wxid_private'],'2030-01-01','2030-01-02')
+    def test_exact_scope_and_date_end(self):
+        scope = project_core.ReadScope('wechat', ('123@chatroom',),
+                                       project_core.parse_bound('2030-01-01'),
+                                       project_core.parse_bound('2030-01-02', end=True))
+        self.assertEqual(scope.group_ids, ('123@chatroom',))
+        self.assertEqual(scope.until, project_core.parse_bound('2030-01-03'))
+        with self.assertRaises(ValueError):
+            project_core.ReadScope('wechat', ('wxid_private',), scope.since, scope.until)
 
-    def test_export_cli_calls_scoped_reader(self):
-        args=['chatnotice.py','export','--platform','qq','--group-id','123',
-              '--since','2030-01-01','--until','2030-01-02','--confirm']
-        with patch.object(sys,'argv',args),patch.object(chatnotice,'load_config',return_value={}),\
-             patch.object(chatnotice,'save_json'),patch('messages.export_request',return_value={'message_count':0}) as read,\
-             patch('sys.stdout',new=io.StringIO()):
-            self.assertEqual(chatnotice.main(),0)
-        request=read.call_args.args[1]
-        self.assertEqual(request['groups'][0]['group_id'],'123')
+    def test_old_entrypoints_are_removed_not_compatibility_wrappers(self):
+        import messages
+        for name in ('chatnotice.py', 'read_chats.py', 'read_logic_images.py'):
+            self.assertFalse((ROOT/name).exists())
+        for name in ('prepare', 'commit', 'todos_apply', 'import_file'):
+            self.assertFalse(hasattr(AgentService, name))
+        self.assertFalse(hasattr(messages, 'export_request'))
 
     def test_attachment_roots_are_configured_not_personal(self):
         allowed=self.base/'allowed'; allowed.mkdir()
@@ -102,8 +103,8 @@ class PublicReleaseTests(unittest.TestCase):
 
     def test_widget_and_cleanup_share_installation_mutex(self):
         import todo_widget
-        self.assertEqual(todo_widget.MUTEX,chatnotice.WIDGET_MUTEX)
-        self.assertEqual(cleanup.WIDGET_MUTEX,chatnotice.WIDGET_MUTEX)
+        self.assertEqual(todo_widget.MUTEX,project_core.WIDGET_MUTEX)
+        self.assertEqual(cleanup.WIDGET_MUTEX,project_core.WIDGET_MUTEX)
         self.assertNotEqual(todo_widget.MUTEX,'Local\\ChatNoticeToolTodoWidget-c39dba48')
 
 

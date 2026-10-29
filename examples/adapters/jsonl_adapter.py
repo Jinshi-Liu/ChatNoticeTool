@@ -1,8 +1,9 @@
 """Runnable, trusted-code adapter example; not a DingTalk/other vendor API.
 
-Use this launcher for every CLI operation while trying the adapter:
+Use read/write normally; --setup selects the separate configuration CLI:
   python examples/adapters/jsonl_adapter.py --help
-  python examples/adapters/jsonl_adapter.py inspect
+  python examples/adapters/jsonl_adapter.py --setup --help
+  python examples/adapters/jsonl_adapter.py --setup inspect
 
 For permanent integration explicitly register this factory in agent_sources.py.
 No modules are discovered or executed from message content or configuration.
@@ -61,8 +62,13 @@ def register():
 
 def main(argv=None, *, service=None):
     register()
-    from agent_cli import main as cli_main
-    return cli_main(argv, service=service)
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args and args[0] == '--setup':
+        from agent_setup import main as cli_main
+        args.pop(0)
+    else:
+        from agent_cli import main as cli_main
+    return cli_main(args, service=service)
 
 
 if __name__ == '__main__':

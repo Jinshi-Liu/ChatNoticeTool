@@ -21,6 +21,8 @@ from agent_config import AgentError, encode
 from agent_imports import ImportSource, ImportStore
 from agent_processing import ProcessingStore
 from agent_service import AgentService
+from agent_setup import SetupService
+from agent_assets import prepare
 from agent_sources import SOURCE_FACTORIES, get_source, register_source
 
 NOW = 1893758400
@@ -34,7 +36,7 @@ class ImportTests(unittest.TestCase):
         self.root, self.incoming = self.base / 'component', self.base / 'incoming'
         self.root.mkdir()
         self.incoming.mkdir()
-        self.patches = [patch('chatnotice.ROOT', self.root), patch('todo_store.ROOT', self.root),
+        self.patches = [patch('project_core.ROOT', self.root), patch('todo_store.ROOT', self.root),
                         patch('time.time', return_value=NOW), patch.dict(SOURCE_FACTORIES)]
         for p in self.patches:
             p.start()
@@ -62,7 +64,8 @@ class ImportTests(unittest.TestCase):
         return path
 
     def importing(self, file, **kwargs):
-        return self.service.import_file(group_key=self.group['key'], file=str(file), confirmed=True, **kwargs)
+        kwargs.setdefault('prepare_images', False)
+        return self.service.read(group_keys=[self.group['key']], file=str(file), confirmed=True, **kwargs)
 
     def commit(self, page, **kwargs):
         results = []
@@ -70,7 +73,7 @@ class ImportTests(unittest.TestCase):
             results.append({'message_key': item['message_key'], 'content_hash': item['content_hash'],
                             'status': 'done', 'text_state': 'analyzed', 'attachment_state': 'not_applicable',
                             'task_ids': [], **kwargs})
-        return self.service.commit({'batch_id': page['batch_id'], 'results': results})
+        return self.service.write({'batch_id': page['batch_id'], 'results': results})
 
     def asset_args(self, page):
         return {'batch_id': page['batch_id'], 'message_keys': [m['message_key'] for m in page['messages']]}
@@ -85,17 +88,18 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(page['counts']['created'], 1)
         self.assertFalse(page['read_client_database'])
         key = page['messages'][0]['message_key']
-        result = self.service.todos_apply({'batch_id': page['batch_id'], 'operations': [{
+        result = self.service.write({'batch_id': page['batch_id'], 'operations': [{
             'operation_id': key + ':task:0', 'message_keys': [key], 'action': 'create',
-            'fields': {'title': '合成事项', 'note': '有说明就直接写在正文里'}}]})
-        task = self.service.todo_store().get(result['results'][0]['id'])
+            'fields': {'title': '合成事项', 'note': '有说明就直接写在正文里'}}], 'results': [{
+                'message_key': key, 'content_hash': page['messages'][0]['content_hash'], 'status': 'done'}]})
+        task = self.service.todo_store().get(result['operations'][0]['id'])
         self.assertEqual(task['source'], '')
         self.assertIn('正文', task['note'])
 
     def test_confirmation_checked_before_file_access(self):
         with patch.object(ImportSource, 'ingest') as ingest:
             with self.assertRaises(AgentError) as error:
-                self.service.import_file(group_key=self.group['key'], file='/not-opened', confirmed=False)
+                self.service.read(group_keys=[self.group['key']], file='/not-opened', confirmed=False)
         self.assertEqual(error.exception.code, 'confirmation_required')
         ingest.assert_not_called()
 
@@ -206,8 +210,8 @@ class ImportTests(unittest.TestCase):
         image.write_bytes(PNG)
         page = self.importing(image)
         with patch.dict(sys.modules, {'attachments': None, 'memory_reader': None, 'PIL': None}):
-            prepared = self.service.prepare(self.asset_args(page))
-            again = self.service.prepare(self.asset_args(page))
+            prepared = prepare(ProcessingStore(self.root), self.asset_args(page))
+            again = prepare(ProcessingStore(self.root), self.asset_args(page))
         item = prepared['results'][0]['items'][0]
         self.assertEqual(Path(item['local_path']).read_bytes(), PNG)
         self.assertTrue(Path(item['local_path']).is_relative_to(self.root / 'state/imports'))
@@ -219,16 +223,16 @@ class ImportTests(unittest.TestCase):
         file.write_bytes(PNG)
         page = self.importing(file)
         file.unlink()
-        prepared = self.service.prepare(self.asset_args(page))
+        prepared = prepare(ProcessingStore(self.root), self.asset_args(page))
         self.assertEqual(prepared['results'][0]['status'], 'prepared')
 
     def test_tampered_asset_does_not_keep_prepared_state(self):
         file = self.incoming / 'photo.png'
         file.write_bytes(PNG)
         page = self.importing(file)
-        first = self.service.prepare(self.asset_args(page))
+        first = prepare(ProcessingStore(self.root), self.asset_args(page))
         Path(first['results'][0]['items'][0]['local_path']).write_bytes(b'tampered')
-        second = self.service.prepare(self.asset_args(page))
+        second = prepare(ProcessingStore(self.root), self.asset_args(page))
         self.assertEqual(second['results'][0]['status'], 'pending')
         with self.assertRaises(AgentError):
             self.commit(page, attachment_state='analyzed')
@@ -238,7 +242,7 @@ class ImportTests(unittest.TestCase):
         file.write_bytes(PNG)
         page = self.importing(file)
         with self.assertRaises(AgentError) as cm:
-            self.service.prepare(self.asset_args(page), pid=1, authorize_memory_read=True)
+            prepare(ProcessingStore(self.root), self.asset_args(page), pid=1, authorize_memory_read=True)
         self.assertEqual(cm.exception.code, 'unsupported_operation')
 
     def test_json_with_text_and_relative_image(self):
@@ -246,14 +250,14 @@ class ImportTests(unittest.TestCase):
         page = self.importing(self.json_file([{'id': 42, 'text': '通知见图', 'attachments': ['picture.png']}]))
         self.assertEqual(page['messages'][0]['message']['message_id'], '42')
         self.assertEqual(page['messages'][0]['message']['attachments'][0]['kind'], 'image')
-        self.assertEqual(self.service.prepare(self.asset_args(page))['results'][0]['status'], 'prepared')
+        self.assertEqual(prepare(ProcessingStore(self.root), self.asset_args(page))['results'][0]['status'], 'prepared')
 
     def test_document_import_and_attachment_permission(self):
         pdf = self.incoming / 'notice.pdf'
         pdf.write_bytes(b'%PDF-1.4\nSynthetic unparsed fixture\n')
         page = self.importing(pdf)
         self.assertEqual(page['messages'][0]['message']['attachments'][0]['kind'], 'document')
-        self.assertEqual(self.service.prepare(self.asset_args(page))['results'][0]['status'], 'prepared')
+        self.assertEqual(prepare(ProcessingStore(self.root), self.asset_args(page))['results'][0]['status'], 'prepared')
         self.source, self.group = self.configure(collection='no-images', grant={
             'text_to_agent': True, 'images_to_agent': False, 'documents_to_agent': True})
         image = self.incoming / 'picture.png'
@@ -335,7 +339,7 @@ class ImportTests(unittest.TestCase):
         second = self.importing(file)
         self.assertNotEqual(first['messages'][0]['message_key'], second['messages'][0]['message_key'])
         with self.assertRaises(AgentError):
-            self.service.import_file(group_key='ungranted', file=str(file), confirmed=True)
+            self.service.read(group_keys=['ungranted'], file=str(file), confirmed=True)
 
     def test_attachment_ids_are_isolated_between_groups_in_one_source(self):
         first_image = self.incoming / 'first.png'
@@ -348,7 +352,7 @@ class ImportTests(unittest.TestCase):
         self.assertNotEqual(first['messages'][0]['message']['source_id'], second['messages'][0]['message']['source_id'])
         page = self.service.read()
         self.assertEqual(page['total'], 2)
-        prepared = self.service.prepare(self.asset_args(page))
+        prepared = prepare(ProcessingStore(self.root), self.asset_args(page))
         manifests = {r['message_key']: r['items'] for r in prepared['results']}
         self.assertEqual(len(manifests[first['messages'][0]['message_key']]), 1)
         self.assertEqual(manifests[first['messages'][0]['message_key']][0]['filename'], 'first.png')
@@ -359,26 +363,26 @@ class ImportTests(unittest.TestCase):
         self.service.config.remove_groups({'confirmed': True, 'expected_revision': self.service.config.load()['revision'],
                                           'group_keys': [self.group['key']]})
         for action in (lambda: self.service.read(batch_id=page['batch_id']),
-                       lambda: self.service.prepare(self.asset_args(page)), lambda: self.commit(page)):
+                       lambda: prepare(ProcessingStore(self.root), self.asset_args(page)), lambda: self.commit(page)):
             with self.assertRaises(AgentError):
                 action()
 
     def test_metadata_listing_and_connection_do_not_touch_client_memory(self):
-        result = self.service.source_action(self.source['id'], 'check')
+        result = SetupService(self.root).source_action(self.source['id'], 'check')
         self.assertEqual(result['status'], 'ready')
         self.assertFalse(result['read_chat_bodies'])
         self.importing(self.json_file([{'text': 'hello'}]))
-        groups = self.service.source_action(self.source['id'], 'groups')
+        groups = SetupService(self.root).source_action(self.source['id'], 'groups')
         self.assertEqual(groups['groups'][0]['group_id'], 'inbox')
         with self.assertRaises(AgentError) as cm:
-            self.service.source_action(self.source['id'], 'connect', pids=[1], authorized=True)
+            SetupService(self.root).source_action(self.source['id'], 'connect', pids=[1], authorized=True)
         self.assertEqual(cm.exception.code, 'unsupported_operation')
 
     def test_cli_import_pagination_commit_and_no_duplicate_analysis(self):
         file = self.json_file([{'id': str(i), 'text': '合成通知'} for i in range(4)])
         output = io.StringIO()
         with patch('sys.stdout', output):
-            code = agent_cli.main(['import', '--group', self.group['key'], '--file', str(file), '--confirm', '--limit', '2'], service=self.service)
+            code = agent_cli.main(['read', '--group', self.group['key'], '--file', str(file), '--confirm', '--limit', '2'], service=self.service)
         self.assertEqual(code, 0, output.getvalue())
         page = json.loads(output.getvalue())['data']
         self.assertEqual(len(page['messages']), 2)
@@ -418,6 +422,17 @@ class ImportTests(unittest.TestCase):
             register_source('example_jsonl', module.ExampleJSONLSource)
         with self.assertRaises(AgentError):
             get_source('unregistered')
+
+    def test_example_launcher_separates_setup_and_daily_help(self):
+        launcher = ROOT / 'examples/adapters/jsonl_adapter.py'
+        for args, expected, absent in ((['--help'], '{read,write}', 'source'),
+                                       (['--setup', '--help'], 'source', '{read,write}')):
+            with self.subTest(args=args):
+                process = subprocess.run([sys.executable, '-B', '-X', 'utf8', str(launcher), *args],
+                                         capture_output=True, text=True, encoding='utf-8', timeout=20)
+                self.assertEqual(process.returncode, 0, process.stderr)
+                self.assertIn(expected, process.stdout)
+                self.assertNotIn(absent, process.stdout)
 
     def test_basic_read_file_and_write_text_need_no_extra_calls(self):
         file = self.incoming / 'notice.txt'
@@ -472,6 +487,29 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(json.loads(output.getvalue())['data']['counts']['created'], 1)
         with patch('sys.stdout', io.StringIO()):
             self.assertEqual(agent_cli.main(['read', '--todos'], service=self.service), 0)
+
+    def test_read_file_attachments_prepares_document_and_mixed_media(self):
+        image, document = self.incoming / 'picture.png', self.incoming / 'notice.pdf'
+        image.write_bytes(PNG)
+        document.write_bytes(b'%PDF-1.4\nSynthetic portable document\n')
+        for name, attachments in (('document.json', ['notice.pdf']), ('mixed.json', ['picture.png', 'notice.pdf'])):
+            file = self.json_file([{'id': name, 'text': '合成附件通知', 'attachments': attachments}], name=name)
+            default = self.service.read(file=str(file), group_keys=[self.group['key']], confirmed=True)
+            row = next(r for r in default['attachments'] if r['message_key'] == default['messages'][-1]['message_key'])
+            self.assertEqual(row['status'], 'not_requested')
+            with patch.dict(sys.modules, {'attachments': None, 'memory_reader': None, 'PIL': None}):
+                page = self.service.read(file=str(file), group_keys=[self.group['key']], confirmed=True, attachments=True)
+            self.assertTrue(all(r['status'] == 'prepared' for r in page['attachments']))
+            self.assertEqual(len(page['attachments'][-1]['items']), len(attachments))
+            self.commit(page, attachment_state='analyzed')
+
+    def test_read_file_attachments_and_chunk_arguments_conflict_before_ingest(self):
+        with patch.object(ImportSource, 'ingest') as ingest:
+            for kwargs in ({'offset': 0}, {'raw': True}):
+                with self.assertRaises(AgentError):
+                    self.service.read(file='/not-opened', group_keys=[self.group['key']], confirmed=True,
+                                      attachments=True, **kwargs)
+        ingest.assert_not_called()
 
     def test_portable_pipeline_imports_no_client_or_image_packages(self):
         result = subprocess.run([sys.executable, '-B', '-X', 'utf8', '-c',

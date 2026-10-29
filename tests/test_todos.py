@@ -77,17 +77,14 @@ class TodoTests(unittest.TestCase):
         with self.assertRaises(ValueError): TodoStore(path)
         self.assertEqual(path.read_bytes(),before)
 
-    def test_seed_once_keeps_progress(self):
-        import json
-        fixture=Path(self.temp.name)
-        (fixture/'initial-todos.json').write_text(json.dumps({'tasks':[{'id':'seed-fixture','title':'示例事项'}]}),encoding='utf-8')
-        with patch('todo_store.ROOT',fixture):
-            self.store.seed_once()
-            id=self.store.tasks()[0]['id']; self.store.mark(id,True)
-            total=len(self.store.tasks())
-            self.store.seed_once()
-        self.assertEqual(total,len(self.store.tasks()))
-        self.assertTrue(self.store.get(id)['done'])
+    def test_store_starts_empty_and_never_seeds_personal_tasks(self):
+        self.assertEqual(self.store.tasks(), [])
+        self.assertFalse(hasattr(self.store, 'seed_once'))
+        self.store.upsert('用户事项', id='user')
+        self.store.mark('user', True)
+        reopened = TodoStore(self.store.path)
+        self.assertEqual(len(reopened.tasks()), 1)
+        self.assertTrue(reopened.get('user')['done'])
 
     def test_deadline_badges(self):
         now=datetime(2026,10,10,21,0)

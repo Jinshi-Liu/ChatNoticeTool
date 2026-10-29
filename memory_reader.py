@@ -14,7 +14,7 @@ import struct
 import time
 
 import cipher
-from chatnotice import project_path, save_json
+from project_core import project_path, save_json
 
 READ_ONLY_ACCESS = 0x0010 | 0x0400
 CIPHER_NAME = b"com.Tencent.WCDB.Config.Cipher"
@@ -384,24 +384,3 @@ def acquire(config: dict, platform: str, pids: list[int]) -> dict:
               "read_chat_bodies": False, "wrote_client_memory": False}
     save_json(f"state/{platform}-key-report.json", report)
     return report
-
-
-if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser(description="Authorized read-only key acquisition")
-    parser.add_argument("platform", choices=["qq", "wechat"])
-    parser.add_argument("--pid", action="append", type=int, required=True)
-    parser.add_argument('--authorize-memory-read', action='store_true',
-                        help='Explicit authorization to read the selected client process memory for this run')
-    args = parser.parse_args()
-    try:
-        from chatnotice import load_config
-        config = load_config(args.platform)
-        if args.authorize_memory_read: config['policy']['allow_process_memory_read'] = True
-        report = acquire(config, args.platform, args.pid)
-        print(json.dumps(report, ensure_ascii=False, indent=2))
-        if not report['verified_databases']: raise SystemExit(2)
-    except (OSError, ValueError, PermissionError) as exc:
-        print(f"Acquisition failed: {exc}")
-        raise SystemExit(2)
-        raise SystemExit(2)

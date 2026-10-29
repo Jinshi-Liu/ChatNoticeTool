@@ -6,7 +6,6 @@ from __future__ import annotations
 from collections import Counter
 from html.parser import HTMLParser
 import hashlib
-import json
 import os
 from pathlib import Path
 import re
@@ -16,7 +15,7 @@ import time
 import xml.etree.ElementTree as ET
 import zipfile
 
-from chatnotice import project_path,save_json
+from project_core import save_json
 from memory_reader import ReadOnlyProcess,load_secrets,merge_verified_secrets
 from wechat_content import xml_root
 
@@ -403,20 +402,3 @@ def collect(report: dict,config: dict,output: Path,wx_pid: int, *, persist: bool
     if persist:
         save_json(str((output/'attachments-manifest.json').relative_to(Path(__file__).resolve().parent)),result)
     return result
-
-
-if __name__=='__main__':
-    import argparse
-    parser=argparse.ArgumentParser()
-    parser.add_argument('--wx-pid',type=int,default=0)
-    parser.add_argument('--authorize-memory-read',action='store_true',help='Allow read-only image-key acquisition for this run')
-    args=parser.parse_args()
-    root=Path(__file__).resolve().parent
-    from chatnotice import load_config
-    config=load_config()
-    if args.authorize_memory_read: config['policy']['allow_process_memory_read']=True
-    latest=json.loads((root/'state/latest-export.json').read_text(encoding='utf-8'))
-    output=project_path('exports/'+latest['batch'])
-    report=json.loads((output/'messages.json').read_text(encoding='utf-8'))
-    result=collect(report,config,output,args.wx_pid)
-    print(json.dumps(result,ensure_ascii=False,indent=2))

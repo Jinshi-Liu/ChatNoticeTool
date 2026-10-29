@@ -1,11 +1,9 @@
 """Read only confirmed group/date scopes, preserving every selected message type.
-Readable exports exclude media keys; original selected rows are DPAPI-sealed locally.
+Readable messages exclude media keys; selected rows stay in memory only.
 No private-chat queries, remote downloads, message sends, or screen automation.
 """
 from __future__ import annotations
 import base64
-from collections import Counter
-from dataclasses import asdict
 from datetime import datetime
 import hashlib
 import json
@@ -14,9 +12,8 @@ import re
 import sqlite3
 import time
 
-from chatnotice import LOCAL_TZ, ReadScope, project_path, save_json
+from project_core import LOCAL_TZ, ReadScope
 from database_reader import open_database
-from memory_reader import protect_secret
 from wechat_content import describe
 
 MAX_BODY = 16 * 1024 * 1024
@@ -58,16 +55,6 @@ def readable_card(text: str) -> str:
             try: return '[群公告]\n'+base64.b64decode(card['text'],validate=True).decode('utf-8')
             except (ValueError,UnicodeDecodeError): return text
     return text
-
-
-def json_safe(value):
-    if isinstance(value, bytes):
-        return {'encoding':'base64','value':base64.b64encode(value).decode('ascii')}
-    if isinstance(value, dict):
-        return {str(k):json_safe(v) for k,v in value.items()}
-    if isinstance(value, (list,tuple)):
-        return [json_safe(v) for v in value]
-    return value
 
 
 def varint(data: bytes, offset: int):
@@ -241,11 +228,11 @@ def selected_wechat(connection: sqlite3.Connection, scope: ReadScope, shard: str
     return rows
 
 
-def read_selected(config: dict, request: dict, *, keep_raw: bool = False) -> dict:
+def read_selected(config: dict, request: dict) -> dict:
     """Read bounded scopes, sharing each snapshot even when group windows differ.
 
-    The Agent path consumes this in memory instead of exporting/sealing the same
-    overlap on every run. Only the legacy export path requests original rows.
+    The Agent consumes this in memory, persisting only parsed messages in its
+    processing ledger rather than repeatedly exporting/sealing original rows.
     """
     if not request.get('confirmed'):
         raise PermissionError('Group selection not confirmed')
@@ -330,44 +317,4 @@ def read_selected(config: dict, request: dict, *, keep_raw: bool = False) -> dic
                           'wal_committed_frames': sum(s.get('wal_committed_frames', 0) for s in snapshots),
                           'query_seconds': round(query_seconds, 4),
                           'decode_seconds': round(time.monotonic() - decode_started, 4)}}
-    if keep_raw:
-        report['_raw'] = raw
     return report
-
-
-def export_request(config: dict, request: dict) -> dict:
-    report = read_selected(config, request, keep_raw=True)
-    raw = report.pop('_raw')
-    readable, errors = report['messages'], report['parse_errors']
-    batch=datetime.now(LOCAL_TZ).strftime('%Y%m%d-%H%M%S-%f')
-    output=project_path('exports/'+batch)
-    output.mkdir(parents=True,exist_ok=False)
-    sealed=protect_secret(json.dumps(json_safe(raw),ensure_ascii=False).encode('utf-8'))
-    (output/'raw-selected.dpapi').write_bytes(sealed)
-    save_json(f'exports/{batch}/messages.json',report)
-    counts=Counter((m['platform'],m['group_id']) for m in readable)
-    status=Counter(m['body_status'] for m in readable)
-    summary={'batch':batch,'output_dir':str(output),'since':request['since'],'until':request['until'],
-        'message_count':len(readable),'groups':[dict(g,message_count=counts[(g['platform'],g['group_id'])]) for g in request['groups']],
-        'body_status_counts':dict(status),'parse_error_count':len(errors),'all_attachment_contents_processed':False,
-        'raw_selected_protection':'Windows user-bound DPAPI','unrelated_private_chats_queried':False}
-    save_json(f'exports/{batch}/summary.json',summary)
-    save_json('state/latest-export.json',summary)
-    lines=['# Selected messages',f"Window: {request['since']} — {request['until']}",'']
-    for message in readable:
-        lines += [f"## {message['time']} | {message['group_name']} | {message['type']} | {message['sender']}",
-                  'Source: '+message['source_id'],message['text'] or '['+message['body_status']+']']
-        if message['attachments']:
-            lines.append('Attachments: '+json.dumps(message['attachments'],ensure_ascii=False))
-        if message['attachment_content_status'] not in ('not_applicable',):
-            lines.append('Attachment content: '+message['attachment_content_status'])
-        lines.append('')
-    (output/'messages.md').write_text('\n'.join(lines),encoding='utf-8')
-    return summary
-
-
-if __name__ == '__main__':
-    root=Path(__file__).resolve().parent
-    config=json.loads((root/'config.json').read_text(encoding='utf-8'))
-    request=json.loads((root/'state/read-request.json').read_text(encoding='utf-8'))
-    print(json.dumps(export_request(config,request),ensure_ascii=False,indent=2))

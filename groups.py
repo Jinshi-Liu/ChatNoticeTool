@@ -1,10 +1,5 @@
 """Group metadata only. Never query private contacts or message content."""
 from __future__ import annotations
-import argparse
-import json
-from pathlib import Path
-
-from chatnotice import save_json
 from database_reader import open_database
 
 
@@ -49,34 +44,3 @@ def inspect_group_schema(config: dict, platform: str) -> dict:
             quoted = '"' + table.replace('"', '""') + '"'
             schema[table] = [dict(row) for row in connection.execute("PRAGMA table_info(" + quoted + ")")]
     return {"snapshot": metadata, "tables": schema, "read_chat_bodies": False}
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description="List group names only, without reading messages")
-    parser.add_argument("platform", choices=["wechat", "qq"])
-    parser.add_argument("--schema", action="store_true")
-    parser.add_argument("--contains", default="", help="Display names containing this literal string")
-    args = parser.parse_args()
-    config = json.loads((Path(__file__).resolve().parent / "config.json").read_text(encoding="utf-8"))
-    try:
-        if args.schema:
-            report = inspect_group_schema(config, args.platform)
-            path = save_json(f"state/{args.platform}-group-schema.json", report)
-            print(json.dumps({"snapshot": report["snapshot"],
-                              "table_names": list(report["tables"])}, ensure_ascii=False, indent=2))
-        else:
-            report = wechat_groups(config) if args.platform == "wechat" else qq_groups(config)
-            path = save_json(f"state/{args.platform}-groups.json", report)
-            print(f"Group metadata ready: {len(report['groups'])} groups; no message content read")
-            for group in report["groups"]:
-                if args.contains in group["name"] or args.contains in group["remark"]:
-                    print(json.dumps(group, ensure_ascii=False))
-        print(f"Saved: {path}; temporary database copies removed")
-        return 0
-    except (OSError, ValueError, RuntimeError) as exc:
-        print(f"Group metadata read failed: {exc}")
-        return 2
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

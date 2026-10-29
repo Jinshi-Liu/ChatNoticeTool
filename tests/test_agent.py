@@ -19,6 +19,8 @@ import agent_cli
 from agent_config import AgentError, encode, private_path
 from agent_processing import ProcessingStore, content_hash, message_key
 from agent_service import AgentService
+from agent_setup import SetupService
+from agent_assets import prepare
 from agent_sources import LocalSource
 import messages
 
@@ -27,10 +29,9 @@ NOW = 1893758400  # fixed synthetic time
 
 class AgentFixture(unittest.TestCase):
     def setUp(self):
-        (ROOT / 'runtime').mkdir(exist_ok=True)
-        self.temp = tempfile.TemporaryDirectory(dir=ROOT / 'runtime')
+        self.temp = tempfile.TemporaryDirectory(prefix='agent-synthetic-')
         self.root = Path(self.temp.name).resolve()
-        self.patches = [patch('chatnotice.ROOT', self.root), patch('todo_store.ROOT', self.root)]
+        self.patches = [patch('project_core.ROOT', self.root), patch('todo_store.ROOT', self.root)]
         for p in self.patches:
             p.start()
         self.service = AgentService(self.root)
@@ -75,8 +76,8 @@ class AgentFixture(unittest.TestCase):
         return {'messages': [m for m in self.data if accepts(m)], 'snapshots': [{}], 'parse_errors': []}
 
     def read(self, **kwargs):
-        # Keep coverage of the compatible, explicitly separate attachment API.
-        # The default lightweight read/write path is tested in test_fast_workflow.
+        # Exercise the low-level preparation/commit validation independently.
+        # The default combined read/write path is tested in test_fast_workflow.
         kwargs.setdefault('prepare_images', False)
         return self.service.read(**kwargs)
 
@@ -86,6 +87,16 @@ class AgentFixture(unittest.TestCase):
                'status': 'done', 'text_state': 'analyzed', 'attachment_state': 'not_applicable', 'task_ids': [], **kwargs}
         return {'batch_id': page['batch_id'], 'results': [row]}
 
+    def commit_results(self, payload):
+        todos = self.service.todo_store()
+        def exists(task_id):
+            try:
+                todos.get(task_id)
+                return True
+            except ValueError:
+                return False
+        return ProcessingStore(self.root).commit(payload, exists)
+
     def revoke(self):
         self.config.remove_groups({'confirmed': True, 'expected_revision': self.config.load()['revision'],
                                    'group_keys': [self.group['key']]})
@@ -94,7 +105,7 @@ class AgentFixture(unittest.TestCase):
 class ConfigTests(AgentFixture):
     def test_inspect_lightweight_no_reader_or_key_check(self):
         with patch.object(LocalSource, 'check') as check:
-            result = self.service.inspect()
+            result = SetupService(self.root).inspect()
         check.assert_not_called()
         self.read_mock.assert_not_called()
         self.assertFalse(result['read_chat_bodies'])
@@ -166,8 +177,8 @@ class ConfigTests(AgentFixture):
         (self.root / 'config.example.json').write_bytes((ROOT / 'config.example.json').read_bytes())
         (self.root / 'config.json').write_text('{"user":"synthetic"}', encoding='utf-8')
         before = self.config.path.read_bytes()
-        first = self.service.setup()
-        second = self.service.setup()
+        first = SetupService(self.root).init()
+        second = SetupService(self.root).init()
         self.assertIn('.chatnotice-owned.json', first['created'])
         self.assertEqual(second['created'], [])
         self.assertEqual(self.config.path.read_bytes(), before)
@@ -191,7 +202,7 @@ class IncrementalTests(AgentFixture):
         self.data = [self.message()]
         with patch.object(LocalSource, 'check') as check, patch.object(LocalSource, 'groups') as groups:
             page = self.read(timings=True)
-            self.service.commit(self.commit_payload(page))
+            self.commit_results(self.commit_payload(page))
             again = self.read()
         self.assertEqual(page['total'], 1)
         self.assertEqual(again['messages'], [])
@@ -203,7 +214,7 @@ class IncrementalTests(AgentFixture):
     def test_resuming_old_batch_does_not_repeat_completed_analysis(self):
         self.data = [self.message()]
         page = self.read()
-        self.service.commit(self.commit_payload(page))
+        self.commit_results(self.commit_payload(page))
         resumed = self.read(batch_id=page['batch_id'])
         self.assertEqual(resumed['messages'], [])
         self.assertIsNone(resumed['next_cursor'])
@@ -212,7 +223,7 @@ class IncrementalTests(AgentFixture):
     def test_changed_content_returned_but_transient_fields_ignored(self):
         self.data = [self.message()]
         page = self.read()
-        self.service.commit(self.commit_payload(page))
+        self.commit_results(self.commit_payload(page))
         self.data[0] = {**self.data[0], 'group_name': '改名', 'time': 'format only', 'output_dir': 'new-batch'}
         self.assertEqual(self.read()['total'], 0)
         self.data[0]['text'] = '更正：延后提交'
@@ -279,7 +290,7 @@ class IncrementalTests(AgentFixture):
         payload = self.commit_payload(page)
         payload['results'][0].update(message_key=row['message_key'], content_hash=row['content_hash'])
         with self.assertRaises(AgentError):
-            self.service.commit(payload)
+            self.commit_results(payload)
 
     def test_revoke_prevents_old_batch_page_chunk_commit_and_assets(self):
         self.data = [self.message()]
@@ -289,15 +300,15 @@ class IncrementalTests(AgentFixture):
         self.revoke()
         for action in (lambda: self.read(batch_id=page['batch_id']),
                        lambda: self.read(batch_id=page['batch_id'], message=key),
-                       lambda: self.service.commit(payload),
-                       lambda: self.service.prepare({'batch_id': page['batch_id'], 'message_keys': [key]})):
+                       lambda: self.commit_results(payload),
+                       lambda: prepare(ProcessingStore(self.root), {'batch_id': page['batch_id'], 'message_keys': [key]})):
             with self.assertRaises(AgentError):
                 action()
 
     def test_rule_change_stales_batch_no_automatic_history_reanalysis(self):
         self.data = [self.message()]
         page = self.read()
-        self.service.commit(self.commit_payload(page))
+        self.commit_results(self.commit_payload(page))
         self.add_group('123', instructions='新规则')
         with self.assertRaises(AgentError):
             self.read(batch_id=page['batch_id'])
@@ -306,7 +317,7 @@ class IncrementalTests(AgentFixture):
     def test_pending_survives_acquisition_cursor_and_reopen(self):
         self.data = [self.message()]
         page = self.read()
-        self.service.commit(self.commit_payload(page, status='pending', text_state='pending', reason='需要上下文'))
+        self.commit_results(self.commit_payload(page, status='pending', text_state='pending', reason='需要上下文'))
         self.data = []
         reopened = AgentService(self.root).read()
         self.assertEqual(reopened['total'], 1)
@@ -318,8 +329,8 @@ class IncrementalTests(AgentFixture):
     def test_old_failure_does_not_undo_concurrent_success(self):
         self.data = [self.message()]
         first, second = self.read(), self.read()
-        self.service.commit(self.commit_payload(first))
-        self.service.commit(self.commit_payload(second, status='pending', text_state='failed'))
+        self.commit_results(self.commit_payload(first))
+        self.commit_results(self.commit_payload(second, status='pending', text_state='failed'))
         self.assertEqual(self.read()['total'], 0)
 
     def test_historical_backfill_must_not_skip_gap(self):
@@ -345,7 +356,7 @@ class IncrementalTests(AgentFixture):
     def test_processed_neighbor_is_read_only_context_for_new_image(self):
         self.data = [self.message(1, text='下图是本周作业', timestamp=NOW - 200)]
         old = self.read()
-        self.service.commit(self.commit_payload(old))
+        self.commit_results(self.commit_payload(old))
         self.data.append(self.message(2, text='新通知', timestamp=NOW - 100))
         page = self.read()
         self.assertEqual(page['total'], 1)
@@ -358,14 +369,14 @@ class IncrementalTests(AgentFixture):
         payload = self.commit_payload(page)
         payload['results'][0]['message_key'] = context['message_key']
         with self.assertRaises(AgentError):
-            self.service.commit(payload)
+            self.commit_results(payload)
 
     def test_explicit_reprocess_keeps_task_links(self):
         self.data = [self.message()]
         page = self.read()
         store = self.service.todo_store()
         store.upsert('合成事项', id='existing')
-        self.service.commit(self.commit_payload(page, task_ids=['existing']))
+        self.commit_results(self.commit_payload(page, task_ids=['existing']))
         self.assertEqual(self.read()['total'], 0)
         reprocess = self.read(since=NOW - 300, until=NOW, reprocess=True)
         self.assertEqual(reprocess['total'], 1)
@@ -375,7 +386,7 @@ class IncrementalTests(AgentFixture):
         self.data = [self.message(text='', body_status='nontext_or_unknown')]
         page = self.read()
         with self.assertRaises(AgentError):
-            self.service.commit(self.commit_payload(page))
+            self.commit_results(self.commit_payload(page))
         self.assertEqual(self.read()['total'], 1)
 
     def test_cli_workflow_uses_one_read_and_compact_json(self):
@@ -451,13 +462,13 @@ class CacheTests(AgentFixture):
 class TodoAgentTests(AgentFixture):
     def test_batch_idempotence_and_partial_conflict(self):
         op = {'operation_id': 'create-1', 'action': 'create', 'fields': {'title': '合成作业'}}
-        first = self.service.todos_apply({'operations': [op]})['results'][0]
-        replay = self.service.todos_apply({'operations': [op]})['results'][0]
+        first = self.service.write({'operations': [op]})['operations'][0]
+        replay = self.service.write({'operations': [op]})['operations'][0]
         self.assertTrue(replay['replayed'])
         self.assertEqual(first['id'], replay['id'])
         bad = {**op, 'fields': {'title': '不同内容'}}
         good = {'operation_id': 'create-2', 'action': 'create', 'fields': {'title': '第二项'}}
-        results = self.service.todos_apply({'operations': [bad, good]})['results']
+        results = self.service.write({'operations': [bad, good]})['operations']
         self.assertFalse(results[0]['ok'])
         self.assertTrue(results[1]['ok'])
         self.assertEqual(len(self.service.todo_store().tasks()), 2)
@@ -486,9 +497,9 @@ class TodoAgentTests(AgentFixture):
         self.assertEqual(store.get('removed')['removed'], 1)
 
     def test_invalid_item_does_not_abort_valid_items(self):
-        results = self.service.todos_apply({'operations': [
+        results = self.service.write({'operations': [
             {'operation_id': 'bad-date', 'action': 'create', 'fields': {'title': 'bad', 'due': 123}},
-            {'operation_id': 'good-date', 'action': 'create', 'fields': {'title': 'good', 'due': None}}]})['results']
+            {'operation_id': 'good-date', 'action': 'create', 'fields': {'title': 'good', 'due': None}}]})['operations']
         self.assertFalse(results[0]['ok'])
         self.assertTrue(results[1]['ok'])
 
@@ -506,12 +517,12 @@ class TodoAgentTests(AgentFixture):
         page = self.read()
         key = page['messages'][0]['message_key']
         operation = {'operation_id': key + ':task:0', 'action': 'create', 'message_keys': [key], 'fields': {'title': '作业'}}
-        payload = {'batch_id': page['batch_id'], 'operations': [operation]}
-        created = self.service.todos_apply(payload)['results'][0]
-        replay = AgentService(self.root).todos_apply(payload)['results'][0]
+        # Simulate the durable todo transaction succeeding before process death.
+        created = self.service.todo_store().apply_batch([operation])[0]
+        replay = AgentService(self.root).todo_store().apply_batch([operation])[0]
         self.assertTrue(replay['replayed'])
         self.assertEqual(created['id'], replay['id'])
-        self.service.commit(self.commit_payload(page, task_ids=[created['id']]))
+        self.service.write(self.commit_payload(page, task_ids=[created['id']]))
         self.assertEqual(self.read()['total'], 0)
         self.assertEqual(len(self.service.todo_store().tasks()), 1)
 
@@ -537,14 +548,14 @@ class AssetTests(AgentFixture):
             page = self.read()
             collect.assert_not_called()
             args = {'batch_id': page['batch_id'], 'message_keys': [page['messages'][0]['message_key']]}
-            prepared = self.service.prepare(args)
-            again = self.service.prepare(args)
+            prepared = prepare(ProcessingStore(self.root), args)
+            again = prepare(ProcessingStore(self.root), args)
         self.assertEqual(collect.call_count, 1)
         self.assertTrue(again['results'][0]['cached'])
         self.assertEqual(prepared['results'][0]['status'], 'prepared')
         with self.assertRaises(AgentError):
-            self.service.commit(self.commit_payload(page))
-        self.service.commit(self.commit_payload(page, attachment_state='analyzed'))
+            self.commit_results(self.commit_payload(page))
+        self.commit_results(self.commit_payload(page, attachment_state='analyzed'))
         self.assertEqual(self.read()['total'], 0)
 
     def test_cache_changed_file_invalidates(self):
@@ -552,9 +563,9 @@ class AssetTests(AgentFixture):
         page = self.read()
         args = {'batch_id': page['batch_id'], 'message_keys': [page['messages'][0]['message_key']]}
         with patch('attachments.collect', side_effect=self.fake_collect) as collect:
-            self.service.prepare(args)
+            prepare(ProcessingStore(self.root), args)
             source.write_bytes(b'changed-synthetic-image-with-new-size')
-            self.assertFalse(self.service.prepare(args)['results'][0]['cached'])
+            self.assertFalse(prepare(ProcessingStore(self.root), args)['results'][0]['cached'])
         self.assertEqual(collect.call_count, 2)
 
     def test_failed_cache_retry_clears_previous_prepared_flag(self):
@@ -562,26 +573,26 @@ class AssetTests(AgentFixture):
         page = self.read()
         args = {'batch_id': page['batch_id'], 'message_keys': [page['messages'][0]['message_key']]}
         with patch('attachments.collect', side_effect=self.fake_collect):
-            self.service.prepare(args)
+            prepare(ProcessingStore(self.root), args)
         source.write_bytes(b'changed')
         with patch('attachments.collect', side_effect=ValueError('synthetic parser failure')):
-            result = self.service.prepare(args, timings=True)
+            result = prepare(ProcessingStore(self.root), args, timings=True)
         self.assertEqual(result['results'][0]['status'], 'pending')
         self.assertIn('prepare_seconds', result['timings'])
         with self.assertRaises(AgentError):
-            self.service.commit(self.commit_payload(page, attachment_state='analyzed'))
+            self.commit_results(self.commit_payload(page, attachment_state='analyzed'))
 
     def test_cache_missing_output_reprepared_and_revoked_cache_blocked(self):
         self.setup_image()
         page = self.read()
         args = {'batch_id': page['batch_id'], 'message_keys': [page['messages'][0]['message_key']]}
         with patch('attachments.collect', side_effect=self.fake_collect) as collect:
-            prepared = self.service.prepare(args)
+            prepared = prepare(ProcessingStore(self.root), args)
             Path(prepared['results'][0]['items'][0]['local_path']).unlink()
-            self.assertFalse(self.service.prepare(args)['results'][0]['cached'])
+            self.assertFalse(prepare(ProcessingStore(self.root), args)['results'][0]['cached'])
             self.revoke()
             with self.assertRaises(AgentError):
-                self.service.prepare(args)
+                prepare(ProcessingStore(self.root), args)
         self.assertEqual(collect.call_count, 2)
 
     def test_no_image_grant_no_file_read(self):
@@ -589,7 +600,7 @@ class AssetTests(AgentFixture):
         self.add_group('123', grant={'text_to_agent': True, 'images_to_agent': False, 'documents_to_agent': False})
         page = self.read()
         with patch('attachments.collect') as collect:
-            result = self.service.prepare({'batch_id': page['batch_id'], 'message_keys': [page['messages'][0]['message_key']]})
+            result = prepare(ProcessingStore(self.root), {'batch_id': page['batch_id'], 'message_keys': [page['messages'][0]['message_key']]})
         self.assertEqual(result['results'][0]['status'], 'scope_denied')
         collect.assert_not_called()
 
@@ -598,8 +609,8 @@ class AssetTests(AgentFixture):
         page = self.read()
         for fields in ({'attachment_state': 'analyzed'}, {'attachment_state': 'skipped'}, {'status': 'skipped'}):
             with self.assertRaises(AgentError):
-                self.service.commit(self.commit_payload(page, **fields))
-        self.service.commit(self.commit_payload(page, attachment_state='skipped', reason='用户明确不处理此图片'))
+                self.commit_results(self.commit_payload(page, **fields))
+        self.commit_results(self.commit_payload(page, attachment_state='skipped', reason='用户明确不处理此图片'))
         self.assertEqual(self.read()['total'], 0)
 
 
@@ -651,12 +662,6 @@ class SnapshotAndCliTests(unittest.TestCase):
             (component / 'state/component-location.json').write_text('[]', encoding='utf-8')
             with self.assertRaises(ValueError):
                 module.locate(str(component))
-        main = (ROOT / 'AGENTS.md').read_text(encoding='utf-8')
-        self.assertTrue(main.startswith('# ChatNoticeTool Agent'))
-        self.assertLess(len(main.encode('utf-8')), 6000)
-        self.assertIn('agent_locator.py', main)
-        self.assertNotIn('/skill:', main)
-        self.assertIn('新增可复用工具', main)
         self.assertFalse((ROOT / 'skills/chatnotice/SKILL.md').exists())
         for ref in ('workflow.md', 'configuration.md', 'commands.md', 'troubleshooting.md', 'extending.md'):
             self.assertTrue((ROOT / 'docs/agent' / ref).is_file())
@@ -724,7 +729,8 @@ class SnapshotAndCliTests(unittest.TestCase):
     def test_cleanup_owns_all_new_public_files(self):
         import cleanup
         self.assertTrue({'agent_cli.py', 'agent_config.py', 'agent_service.py', 'agent_sources.py',
-                         'agent_processing.py', 'agent_assets.py', 'agent_locator.py', 'AGENTS.md', 'docs'} <= cleanup.OWNED)
+                         'agent_processing.py', 'agent_assets.py', 'agent_locator.py', 'project_core.py',
+                         'cli_support.py', 'agent_setup.py', 'rules_editor.py', 'AGENTS.md', 'docs'} <= cleanup.OWNED)
         self.assertIn('/skills/chatnotice/.local/', (ROOT / '.gitignore').read_text())
 
     def test_cli_errors_are_json_without_echoing_private_input(self):

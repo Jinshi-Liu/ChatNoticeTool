@@ -186,7 +186,7 @@ class FastWorkflowTests(AgentFixture):
         with self.assertRaises(AgentError):
             self.service.write(self.payload(page))
 
-    def test_no_prepare_flag_preserves_explicit_legacy_path(self):
+    def test_no_prepare_flag_skips_page_images(self):
         self.setup_image()
         with patch('attachments.collect') as prepare:
             self.service.read(prepare_images=False)

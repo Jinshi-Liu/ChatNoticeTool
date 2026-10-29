@@ -1,254 +1,201 @@
-# Agent 命令参考（schema_version=1）
+# 命令参考（schema_version=1）
 
-使用定位脚本返回的 `argv_prefix`，其后追加下列命令。示例群ID、路径均为占位/虚构，必须用实际授权选择的输出替换。
+日常入口是 `python -B -X utf8 agent_cli.py read/write`；配置入口是 `python -B -X utf8 agent_setup.py`。
+示例中的路径、ID、批次和哈希使用实际返回值替换。
+
+`agent_locator.py` 返回的 `argv_prefix` 指向 `agent_cli.py`。调用配置工具时，保留同一个 Python 和运行参数，将脚本换成项目内的 `agent_setup.py`。
 
 成功：`{"schema_version":1,"ok":true,"data":{...}}`，退出码0。
 失败：`{"schema_version":1,"ok":false,"error":{"code":"...","message":"...","next_actions":[]}}`，退出码2。
 
-**日常仅两个入口：read批量读取结构化数据，write批量写入。**结构化写入优先`--input -`直接传标准输入，不另开工具调用落盘请求；兼容`--input <私有UTF-8 JSON绝对路径>`，上限1MiB，不静默截断。不要传密钥。
+## read：消息、文件与待办
 
-## 日常read / write
+下列参数位于 `agent_cli.py` 后：
 
 ```text
-read [--group <key> ...] [--limit 50] [--timings]
-read --batch <批次> --cursor <next_cursor>
-read --todos [--id <待办ID> ...] [--cursor 0] [--limit 50] [--all]
-read --file <绝对路径> --group <已授权收件箱key> --confirm
+read [--group KEY ...] [--since START] [--until now] [--limit 50] [--timings]
+read --batch B [--cursor C] [--limit 50]
+read --batch B --message K [--offset 0] [--chars 8000] [--raw]
+read [--group KEY ...] --since START --until END [--reprocess]
+read --group KEY --since START --until END --from-export ABS_EXPORT_DIR
+read --file ABS_FILE --group KEY --confirm [--format auto] [--timestamp ISO_TIME]
+read --todos [--cursor 0] [--limit 50] [--all]
+read --id TODO_ID [--id TODO_ID ...]
+```
+
+### 读取与分页
+
+- 默认读取当前已授权群的新消息、变化消息和未完成项，返回精简正文及本页已授权纯图片路径。不会扫描内存或调用模型。
+- `--group` 可重复，使用准确的配置 key，不接受模糊群名。时间范围受已保存授权及 `max_days` 限制。
+- 无游标且未指定 `--since` 时，从最近 `max_days` 窗口开始；`history_available_before/history_notice` 表示更早历史未扫描。显式 `--since` 用于历史回补。
+- 后续增量读取使用重叠窗口和身份、内容哈希去重。获取游标仅表示已接收，不表示已理解；重叠窗口也不保证发现任意晚到历史消息。
+- 返回 `message_key/content_hash`、处理阶段、已有 `task_ids` 和配置说明。`context` 是附近已处理消息的只读上下文，不重复提交结果。
+- `next_cursor` 非空时用同一批次续读，不重新解密。`limit` 为1–200，实际页还受内容大小预算限制。
+- `content_ref` 对应大正文分块，按 `next_offset` 读到结束。默认分块是精简视图；`--raw` 才读取完整脱敏原文，不是原始数据库行。
+- `--reprocess` 重置实际读到消息的分析标记，不清除待办关联。`--from-export` 校验历史导出覆盖与来源，失败不自动回退客户端，不推进客户端获取游标。
+
+### 附件
+
+```text
+read [--group KEY ...] --attachments
+read --batch B --cursor C --attachments
+read --batch B --message K --attachments
+read [--group KEY ...] --no-prepare-images
+```
+
+`--attachments` 准备本页所有已授权媒体，包含文档；默认仅准备纯图片。`--no-prepare-images` 关闭默认图片准备。
+
+`--batch B --message K --attachments` **只返回这个已交付消息的附件准备报告**，不返回正文分块；不带 `--attachments` 时，同样的 `--message` 用于读正文。
+
+报告包含资源路径及 `prepared/pending/scope_denied/unsupported_or_no_attachment` 等状态。准备只访问消息引用的本地资源，不下载、不执行内容；图片与文档权限分别校验，混合或未知附件可能同时需要两种权限。
+`prepared` 表示资源可用，不是 Agent 已理解。缓存复用仍检查权限和文件指纹。
+
+缺少微信图片密钥时，在单次内存读取授权后使用配置工具：
+
+```text
+python -B -X utf8 agent_setup.py images --batch B --message K --message K2 --pid PID --authorize-memory-read [--timings]
+```
+
+### 文件和待办
+
+文件读取只用于具有 `file_import` 能力的已授权收件箱。支持 JSON、UTF-8文本、图片与文档；`--format` 和 `--timestamp` 只用于所选文件，详细限制见[导入格式](importing.md)。返回首个处理页面，后续按批次分页，不必再次读取原文件。
+
+`read --todos` 列待办，`--all` 包含已移除项；`read --id` 可批量准确查询，包含已移除记录。待办读取不查询聊天。
+
+## write：待办操作与处理结果
+
+```text
 write --input - [--timings]
 ```
 
-read默认只准备本页已授权纯图片，与精简消息一次返回attachments；不扫描内存、不下载、不调用模型、不自动处理文档/混合附件。--no-prepare-images仅在明确不需要图片时使用。分页不重读客户端。Agent使用自己的看图能力，随后write一次写待办及分析结果。
+UTF-8 JSON 从标准输入传入；也可用 `--input ABS_JSON_FILE`。输入上限1MiB。
 
 ```json
 {
-  "batch_id":"read返回的批次",
+  "batch_id":"B",
   "operations":[{
-    "operation_id":"稳定逻辑操作ID",
+    "operation_id":"notice:task:1",
     "action":"create",
-    "message_keys":["消息key"],
-    "fields":{"title":"事项标题","note":"要求和已知说明直接写正文"}
+    "message_keys":["K"],
+    "fields":{"title":"提交练习","due":"2030-10-13","due_label":"10/13 上课前","note":"题目和提交要求","optional":false}
   }],
-  "results":[{"message_key":"消息key","content_hash":"内容版本","status":"done"}]
+  "results":[{"message_key":"K","content_hash":"H","status":"done"}]
 }
 ```
 
-- operations可省略/为空；每批最多200项。results每批1到200项；新待办ID自动关联，不需要再次查询后commit。单条消息本次提交的已有与候选待办ID合计最多100个（同一ID去重）；超限返回too_many_task_links，发生在写待办之前，可拆分operations重试。
-- done表示Agent确认该消息正文与适用附件已理解；缺失阶段字段会据此补为analyzed，工具仍校验图片准备、正文状态和版本。pending未完成，skipped明确跳过且须reason；需要细分时可传text_state/attachment_state。只准备过图片不等于可以done。
-- 工具先校验批次、版本、阶段和已有task_ids，再写待办。某操作失败，所有引用它的消息强制pending，其他消息可正常登记；成功部分的任务关联保留。即使漏填/只填部分operation_ids，也不能绕过从message_keys推导的依赖。
-- 只引用本次results中的已交付消息。task_ids可选，用于已有待办；新任务从成功操作自动关联。字段baseline、显式完成/移除、稳定operation_id约定与旧接口一致。
-- 两库不是原子事务。中断时重放同一operation_id和相同操作参数，不重复写；输入改变须按语义使用新ID。检查has_failures和逐项operations结果，顶层ok不代表全部成功。
-- 独立管理待办时write只传operations，不带batch_id/results/message_keys。read --todos或read --id批量核对；准确选ID会返回已移除记录，以免错误复活。
+独立管理待办时只传 `operations`，不带 `batch_id/results/message_keys`；无待办变化可只传 `batch_id/results`。
 
-在支持here-document的shell中，一次工具执行即可传stdin，无需先建文件：
+### 操作 schema
+
+`operations` 每批最多200项，返回逐项结果。新增可省略 `id`，由 `operation_id` 派生稳定ID。相同操作ID和完全相同参数视为重放；同ID不同参数拒绝。
+
+```json
+{"operation_id":"notice:patch:1","action":"patch","id":"TODO_ID","message_keys":["K"],"fields":{"due":"2030-10-15"},"baseline":{"due":"2030-10-13"}}
+```
+
+可改字段：`title/due/due_label/note/source/optional`，只传变更字段及相应 `baseline`。`source` 是可选字段；来源说明可直接写 `note`。日期可为 `YYYY-MM-DD`、`YYYY-MM-DD HH:MM` 或 `null`。
+
+- 完成/撤回：`action:"mark",value:true/false,baseline:{"done":0/1}`。
+- 移除/恢复：`action:"remove",value:true/false,baseline:{"removed":0/1}`。
+- 普通 create/patch 不重置完成或移除状态；create 不覆盖已有ID，patch 不修改已移除项。
+- 冲突时按返回的 `current_id` 用 `read --id` 获取当前值，再决定修订方式。
+
+### 结果 schema
+
+```json
+{
+  "batch_id":"B",
+  "results":[{
+    "message_key":"K","content_hash":"H","status":"pending",
+    "text_state":"analyzed","attachment_state":"pending",
+    "reason":"图片资源缺失","task_ids":[]
+  }]
+}
+```
+
+- `results` 每批1–200项，只引用本批已交付消息及对应内容版本。
+- `status` 为 `done/pending/skipped`；`text_state` 为 `analyzed/pending/failed/skipped`；`attachment_state` 为 `analyzed/not_applicable/pending/failed/skipped`。
+- `done` 表示 Agent 确认正文及适用媒体已理解，缺少阶段字段时会据此补全；附件准备成功本身不等于 done。工具仍检查正文、附件和版本状态。
+- 未完成用 `pending`；跳过用 `skipped` 并提供原因。无附件才用 `not_applicable`。没有待办也可完成消息。
+- 已有待办可用 `task_ids` 关联，新建待办从成功操作自动关联。单条消息的已有与候选关联合计最多100个ID（去重）。
+- 操作只能关联本次结果中的消息。依赖操作失败时，对应消息保留 pending，成功关联仍保留；检查 `has_failures` 及逐项结果，顶层 `ok` 不表示全部成功。
+- 两库不是原子事务。中断后用相同操作ID与参数重放；字段语义变化使用新ID，修订已有事项用 patch。
+
+### stdin 示例
+
+支持 here-document 的 shell：
 
 ```sh
-<项目Python> -B -X utf8 <项目>/agent_cli.py write --input - <<'JSON'
+python -B -X utf8 agent_cli.py write --input - <<'JSON'
 {"batch_id":"B","results":[{"message_key":"K","content_hash":"H","status":"done"}]}
 JSON
 ```
 
-宿主也可直接传子进程stdin。PowerShell用UTF-8管道；Windows PowerShell 5.1需在当前会话设置UTF-8的$OutputEncoding，不改变全局配置。不要把消息内容拼成可执行命令。
+PowerShell：
 
-微信图片不返回CDN/XML传输属性，引用只返回完整当前标题及被引用消息标识；raw_ref仅在需要时`read --batch B --message K --raw`读取完整脱敏原文。content_ref仍须分块读全，默认分块是当前精简视图，非原始数据库行。
+```powershell
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+@'
+{"operations":[{"operation_id":"manual:1","action":"create","fields":{"title":"手动事项"}}]}
+'@ | .\.venv\Scripts\python.exe -B -X utf8 agent_cli.py write --input -
+```
 
-## 首次配置与兼容接口（非日常链路）
+宿主也可直接传子进程 stdin。
 
-下面接口用于首次配置、故障、文档附件、历史回补或兼容旧调用，不要求每轮运行。
+## agent_setup.py：配置与连接
 
-## 安装/来源
+以下命令位于 `agent_setup.py` 后，不是 `agent_cli.py` 子命令：
 
 ```text
 inspect
-setup
-source candidates --platform qq|wechat|dingtalk [--base <明确绝对目录>]
-source configure --input <请求文件>
-source check --source <来源ID>
-source connect --source <来源ID> --pid <本人客户端PID> --authorize-memory-read
+init
+source candidates --platform qq|wechat|dingtalk [--base ABS_DIR]
+source configure --input -
+source check --source SOURCE_ID
+source connect --source SOURCE_ID --pid PID [--pid PID2] --authorize-memory-read
+groups list --source SOURCE_ID [--contains TEXT] [--offset 0] [--limit 50]
+groups plan --input -
+groups apply --input -
+groups remove --input -
+images --batch B --message K [--message K2] --pid PID --authorize-memory-read [--timings]
 ```
 
-`inspect` 只检查本项目状态，不验证密钥、不读客户端。对QQ/微信，`source check` 只验证数据库首页凭据，不查询正文，不必每轮运行。`source connect` 的授权只用于此次命令，可以重复 `--pid`；不得从持久配置自动生成内存授权。
+配置输入也支持私有 UTF-8 JSON 文件。`inspect` 检查项目状态；`init` 补齐初始化，不覆盖用户规则。`source check` 检查凭据，不查询聊天正文；`connect` 的内存授权仅用于本次调用。
 
-来源配置输入：
+来源配置：
+
+```json
+{"expected_revision":0,"confirmed":true,"platform":"qq","name":"我的QQ","paths":{"database_dir":"D:/example/nt_qq/nt_db","media_dir":"D:/example/nt_qq/nt_data"}}
+```
+
+微信使用 `database_dir/account_dir`。目录为已确认的绝对路径。文件收件箱使用 `platform:"import",collection:"inbox",name:"本地收件箱"`，不需要 paths。
+
+钉钉实验来源使用 `platform:"dingtalk"`、明确的 `uid` 与 `paths.account_dir`；`source check` 仅验证首页结构，不需要内存扫描。见[钉钉 V3 实验读取](dingtalk.md)。
+
+群配置可用 `groups plan` 预览；参数与授权已确定时直接 `groups apply`：
 
 ```json
 {
-  "expected_revision": 0,
-  "confirmed": true,
-  "platform": "qq",
-  "name": "我的QQ",
-  "paths": {
-    "database_dir": "D:/example/nt_qq/nt_db",
-    "media_dir": "D:/example/nt_qq/nt_data"
-  }
-}
-```
-
-微信的 `paths` 为 `database_dir` 和 `account_dir`。目录必须存在且为绝对路径。`expected_revision` 使用最近的inspect/写入返回值。账号ID由平台和规范化数据库目录派生；换账号目录产生新来源，不继承原群授权。新入口不覆盖旧 `config.json` 的客户端路径；单独保存每个来源，兼容原手工入口。媒体访问不继承旧的 `extra_allowed_roots`，首版只访问该来源媒体目录。
-
-文件收件箱来源配置使用`platform:"import"`、可选`collection:"inbox"`和name，不需要客户端paths、账号或取钥。其check只统计本地已导入条数，groups只列已导入分组元数据，首次可自行命名inbox分组；详见[通用导入](importing.md)。
-
-钉钉实验来源使用platform:dingtalk、明确uid和paths.account_dir；不自动读日志或扫描内存。source check仅验证首页结构，返回format_candidate，不代表实机验证。能力、权限和格式限制见[钉钉V3实验读取](dingtalk.md)，日常仍只有read/write。
-
-## 群配置
-
-```text
-groups list --source <来源ID> [--contains <字面片段>] [--offset 0] [--limit 50]
-groups plan --input <请求文件>
-groups apply --input <同一请求文件>
-groups remove --input <撤销请求文件>
-```
-
-`list` 查询元数据，按返回的 `next_offset` 继续，不查询正文。`plan` 不写配置、不读正文；`apply` 必须在用户确认后执行。
-
-```json
-{
-  "expected_revision": 1,
-  "confirmed": true,
-  "groups": [{
-    "source_id": "从source configure输出复制",
-    "group_id": "123456789",
-    "name": "示例课程群",
-    "since": "2030-10-01T00:00:00+08:00",
-    "until": null,
-    "max_days": 7,
-    "enabled": true,
-    "instructions": "图片优先，结合相邻文字整理作业、截止时间和提交方式。",
-    "recipient": "用户确认的当前Agent/服务",
-    "grant": {
-      "text_to_agent": true,
-      "images_to_agent": true,
-      "documents_to_agent": false
-    }
+  "expected_revision":1,"confirmed":true,
+  "groups":[{
+    "source_id":"SOURCE_ID","group_id":"123456789","name":"课程群",
+    "since":"2030-10-01T00:00:00+08:00","until":null,"max_days":7,"enabled":true,
+    "recipient":"当前Agent/服务",
+    "grant":{"text_to_agent":true,"images_to_agent":true,"documents_to_agent":false}
   }]
 }
 ```
 
-每次1–100个群；`group_key` 由工具生成，不手算。`since` 必填且需用户确认。可选 `until` 为授权结束边界，不填则允许后续按需读取；日期结束包含当天，带时间的结束上界不包含该时刻。单次跨度 `max_days` 为1–31天，默认7天。未列出的群拒绝访问。
+可选 `instructions` 保存用户给该群的说明，不生成统一行为模板。`group_key` 使用工具返回值。每次1–100个群，`max_days` 为1–31天；日期结束包含当天，带时间结束为不含该时刻的上界。
 
-修改时提供完整群对象（准确保留来源、时间范围、交付授权等），以免意外改变已有授权。停用可设置 `enabled:false`；彻底撤销：
-
-```json
-{"expected_revision":2,"confirmed":true,"group_keys":["从输出复制准确key"]}
-```
-
-改规则或撤权后旧批次不可继续访问，已写入的用户待办不会被删除。
-
-## 通用文件导入
-
-```text
-import --group <已授权group_key> --file <绝对路径> --confirm [--format auto] [--timestamp <ISO时间>] [--limit 50] [--timings]
-```
-
-仅适用于声明file_import能力的来源，不能借QQ/微信授权导入任意文件。不要求原始来源、发言者或时间；支持JSON、UTF-8文本、图片和文档，规范及上限见[导入格式](importing.md)。import直接返回现有处理批次，不必再read。日常read从导入队列取未完成内容，不补扫多年空历史；显式--since才重新扫描收件箱。
-
-## 增量读取/分页
-
-```text
-read [--group <group_key> ...] [--until now] [--limit 50] [--timings]
-read --batch <批次ID> --cursor <next_cursor> [--limit 50]
-read --batch <批次ID> --message <message_key> --offset <字符偏移> [--chars 8000]
-read --group <key> --since <起点> --until <终点> [--reprocess]
-read --group <key> --since <起点> --until <终点> --from-export <项目exports中的已有批次>
-```
-
-- 默认按当前授权群读取，一次覆盖多个平台/来源，共用所需快照并准备本页已授权纯图片；不自动取钥、不调用模型。--no-prepare-images关闭图片准备，文档附件仍需明确申请。
-- 不接受模糊群名或未配置的群；范围不能越过授权起点/终点。较长历史按 `max_days` 分段，并返回 `more_history` 和 `read_windows`。
-- 新调用固定本次 `now`。没有已接收位置且未传--since时，首次读取授权范围内最近max_days天（默认7天）；若授权更早，返回history_available_before及history_notice，明确更早历史尚未扫描。授权起点不变，历史回补用显式--since；不会自动从1970年等技术起点逐周空扫。
-- 后续默认以已接收位置为基础重叠24小时（单次跨度很小时缩短，以确保向前推进），按身份＋内容哈希去重。显式历史回补不越过未经扫描的缺口推进既有获取游标；已有历史追赶游标继续按窗口向前推进。
-- 返回消息的 `message_key`、`content_hash`、群规则、当前阶段、已有 `task_ids`。已完成且内容不变的历史不再作为待处理消息返回。`context` 最多附带各页相关群前24小时内附近两条已处理消息，受同一授权和大小预算约束；它们是只读上下文，不提交进度、不重新建事项，大内容同样可分块。不扩大范围拉取私聊。
-- `next_cursor` 不为null时继续同一批次。分页不会重新解密。数量limit为1–200，实际页可能因约32KiB内容预算更小，须以续读标识为准。
-- 超大单条提供content_ref，用分块返回到next_offset:null；默认是精简视图JSON的连续片段，必须合并理解。raw_ref为可选完整脱敏原文，需显式--raw，不每轮取回XML。
-- `--reprocess` 只在用户要求重分析时使用，重置本次实际读到消息的分析完成标记，不清除待办关联；仍用已有待办/幂等操作避免重复创建。
-- `--from-export` 是显式历史路径，只能选择同一来源账号的群；校验原范围、快照数据库来源及每条消息。无法验证、范围不足或文件缺失直接失败，不回退读客户端；不推进客户端获取游标。输出明确标记历史快照。
-- --timings返回读取、快照/解密、查询、正文、落库、本页附件和写入计时；snapshot_phases细分复制校验、派生密钥、主库解密、WAL重放及SQLite检查，并给出decrypted_pages和wal_committed_frames；图片准备含定位/转换、直接命中和每群回退遍历次数。Agent推理/看图与往返由调用端另测，不包括在内部计时。`attachments prepare`、`todos apply`、`processing commit` 也支持 `--timings`，分别报告资源准备/缓存命中、待办写入和记账耗时。默认不输出诊断。不承诺固定秒数，数据库仍须安全快照、认证和WAL校验。
-
-## 附件
-
-```text
-attachments prepare --input <请求文件>
-attachments prepare --input <请求文件> --pid <本人微信PID> --authorize-memory-read
-```
+修改提供完整群对象及最新 `expected_revision`，保留未改的范围与授权。撤销输入：
 
 ```json
-{"batch_id":"批次ID","message_keys":["本页返回的message_key"]}
+{"expected_revision":2,"confirmed":true,"group_keys":["KEY"]}
 ```
 
-以下分步附件入口仅在默认图片流程不覆盖（如文档、混合附件、另行授权取钥）时使用。每批1–200个已返回的消息ID；各消息返回 `prepared/pending/scope_denied/unsupported_or_no_attachment` 以及本地资源路径。只访问选定消息引用的本地资源，不下载、不执行附件，不改变原始客户端文件。
+改配置或撤权可使旧批次失效，不删除已写入待办。编辑 `AGENTS.md` 不会修改这些权限。
 
-本地缓存可复用，不重复转换未变化图片；文件元数据变化/丢失、授权变化、转换器版本变化使缓存失效。缓存不是对同用户恶意程序的安全隔离。`prepared` 不是OCR完成，也不是AI已分析。
+## 计时
 
-图片权限与文档权限分别检查。混合附件/未知类型/ZIP可能同时需要图片和文档交付授权，不自动扩大。图片密钥缺少时默认保留pending；另行说明、确认后才带PID和单次内存授权重试。
-
-## 待办（独立于聊天）
-
-```text
-todos list [--offset 0] [--limit 50] [--all]
-todos get --id <待办ID>
-todos apply --input <请求文件>
-```
-
-```json
-{
-  "batch_id": "批次ID",
-  "operations": [{
-    "operation_id": "message-key:task:0",
-    "action": "create",
-    "message_keys": ["message-key"],
-    "fields": {
-      "title": "提交练习",
-      "due": "2030-10-13",
-      "due_label": "10/13 上课前",
-      "note": "题目和提交要求；必要原文及已知说明直接写正文",
-      "optional": false
-    }
-  }]
-}
-```
-
-`operations` 每批1–200项。新增可省略 `id`，由operation_id派生稳定ID。返回逐项 `ok/id/replayed` 或错误；**顶层ok只代表接口成功，必须检查每项结果。**相同operation_id且内容完全相同为重放，不再次修改；同ID用于不同内容拒绝。失败项不回滚其他成功项。
-
-冲突返回 `current_id` 和查询建议，不附带整条大正文；按需 `todos get --id ...` 获取当前值再决定。
-
-修改示例：
-
-```json
-{"operation_id":"notice-revision:patch:0","action":"patch","id":"已有待办ID","message_keys":["message-key"],"fields":{"due":"2030-10-15"},"baseline":{"due":"2030-10-13"}}
-```
-
-source是保留的兼容可选字段，不要求填写；无来源信息也可新增，有说明直接写note正文即可。可改 `title/due/due_label/note/source/optional`，只传实际要改的字段及对应baseline。日期使用YYYY-MM-DD或YYYY-MM-DD HH:MM，可为null；时间含义由Agent结合消息解释。
-
-显式完成/撤回：`action:"mark",value:true/false,baseline:{"done":0/1}`。
-显式移除/恢复：`action:"remove",value:true/false,baseline:{"removed":0/1}`。
-
-普通create/patch不重置完成或移除状态；create不覆盖已有ID（包括已移除项），patch不修改已移除项。状态动作由Agent根据用户意图决定，不自动触发。纯待办管理可不传batch_id，但也不得伪造message_keys。
-
-## 处理记账
-
-```text
-processing pending [--group <key> ...]
-processing commit --input <请求文件>
-```
-
-```json
-{
-  "batch_id":"批次ID",
-  "results":[{
-    "message_key":"从本批次输出复制",
-    "content_hash":"从本批次输出复制",
-    "status":"done",
-    "text_state":"analyzed",
-    "attachment_state":"not_applicable",
-    "reason":"",
-    "task_ids":["成功写入的待办ID"]
-  }]
-}
-```
-
-- `status`: `done/pending/skipped`。
-- `text_state`: `analyzed/pending/failed/skipped`。
-- `attachment_state`: `analyzed/not_applicable/pending/failed/skipped`。
-- 无事项时 `task_ids:[]`，仍可done。有媒体不能用not_applicable；未成功prepare的媒体不能标记analyzed。任一skip须非空reason，失败不可伪装为skip。
-- unresolved用pending；已完成正文但附件缺失时如实保留附件pending。用户明确允许不处理时才能记录跳过原因。
-- 一条消息可关联多待办，多条消息可关联同一待办；关联ID须真实存在。commit前先检查todos apply每项结果。
-- 每次1–200项，批量登记。获取与分析分离：读到消息时先持久接收，只有done或显式skipped才不再返回；中断、失败、未知类型不会被游标跳过。
-- 待办成功后commit前崩溃，重用原operation_id重试，再提交结果。规则变更、消息版本变化或撤权会拒绝旧批次继续处理，不能直接读原文件绕过。
+`read/write --timings` 返回组件内部耗时；读取可细分快照复制、认证解密、WAL、SQLite检查、查询、落库与附件准备。Agent推理、看图和工具往返由调用端另测。详见[性能验证](performance.md)。

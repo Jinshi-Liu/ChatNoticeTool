@@ -14,7 +14,7 @@ import tempfile
 import time
 
 import cipher
-from chatnotice import project_path
+from project_core import project_path
 from memory_reader import load_secrets
 
 

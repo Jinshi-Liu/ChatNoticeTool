@@ -10,7 +10,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-import chatnotice
+import project_core
+from memory_reader import first_pages
 import cleanup
 import cipher
 
@@ -34,22 +35,22 @@ class ProjectTests(unittest.TestCase):
 
     def test_scope_requires_group(self):
         with self.assertRaises(ValueError):
-            chatnotice.ReadScope("qq", (), 1, 2)
+            project_core.ReadScope("qq", (), 1, 2)
 
     def test_scope_rejects_private_wechat(self):
         with self.assertRaises(ValueError):
-            chatnotice.ReadScope("wechat", ("wxid_private",), 1, 2)
+            project_core.ReadScope("wechat", ("wxid_private",), 1, 2)
 
     def test_scope_rejects_qq_name(self):
         with self.assertRaises(ValueError):
-            chatnotice.ReadScope("qq", ("班级群",), 1, 2)
+            project_core.ReadScope("qq", ("班级群",), 1, 2)
 
     def test_scope_rejects_duplicate_groups(self):
         with self.assertRaises(ValueError):
-            chatnotice.ReadScope("qq", ("123", "123"), 1, 2)
+            project_core.ReadScope("qq", ("123", "123"), 1, 2)
 
     def test_scope_exact_group_platform_and_time(self):
-        scope = chatnotice.ReadScope("qq", ("123",), 100, 200)
+        scope = project_core.ReadScope("qq", ("123",), 100, 200)
         self.assertTrue(scope.accepts("qq", "123", 100))
         self.assertFalse(scope.accepts("qq", "123", 200))
         self.assertFalse(scope.accepts("qq", "1234", 150))
@@ -57,33 +58,34 @@ class ProjectTests(unittest.TestCase):
 
     def test_empty_time_range_rejected(self):
         with self.assertRaises(ValueError):
-            chatnotice.ReadScope("qq", ("123",), 1, 1)
+            project_core.ReadScope("qq", ("123",), 1, 1)
 
     def test_date_end_includes_whole_day(self):
-        self.assertEqual(chatnotice.parse_bound("2026-10-10", end=True),
-                         chatnotice.parse_bound("2026-10-11T00:00:00+08:00"))
+        self.assertEqual(project_core.parse_bound("2026-10-10", end=True),
+                         project_core.parse_bound("2026-10-11T00:00:00+08:00"))
 
     def test_timestamp_end_exclusive(self):
-        self.assertEqual(chatnotice.parse_bound("2026-10-10T18:00:00", end=True),
-                         chatnotice.parse_bound("2026-10-10T18:00:00+08:00"))
+        self.assertEqual(project_core.parse_bound("2026-10-10T18:00:00", end=True),
+                         project_core.parse_bound("2026-10-10T18:00:00+08:00"))
 
     def test_output_cannot_escape_root(self):
         with self.assertRaises(ValueError):
-            chatnotice.project_path("../outside.json")
+            project_core.project_path("../outside.json")
 
-    def test_probe_does_not_modify_file(self):
-        path = self.base / "fixture.db"
-        content = chatnotice.SQLITE_MAGIC + bytes(4096 - 16)
+    def test_first_page_probe_does_not_modify_file(self):
+        folder = self.base / 'contact'
+        folder.mkdir()
+        path = folder / 'contact.db'
+        content = project_core.SQLITE_MAGIC + bytes(4096 - 16)
         path.write_bytes(content)
         before = path.stat().st_mtime_ns
-        report = chatnotice.database_metadata(path)
-        self.assertEqual(report["status"], "plain_sqlite")
-        self.assertFalse(report["read_content"])
+        pages = first_pages({'wechat': {'database_dir': str(self.base)}}, 'wechat')
+        self.assertEqual(pages, {str(path): content})
         self.assertEqual(path.read_bytes(), content)
         self.assertEqual(path.stat().st_mtime_ns, before)
 
-    def test_probe_missing_file(self):
-        self.assertEqual(chatnotice.database_metadata(self.base / "absent.db")["status"], "not_found")
+    def test_first_page_probe_missing_file(self):
+        self.assertEqual(first_pages({'wechat': {'database_dir': str(self.base)}}, 'wechat'), {})
 
     def test_cleanup_preview_does_not_delete(self):
         project = self.project()

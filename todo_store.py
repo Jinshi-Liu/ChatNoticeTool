@@ -2,7 +2,6 @@
 Assistant updates use stable IDs and preserve completed/removed status.
 """
 from __future__ import annotations
-import argparse
 import hashlib
 from contextlib import contextmanager
 from datetime import datetime
@@ -12,7 +11,7 @@ import re
 import sqlite3
 import uuid
 
-from chatnotice import ROOT, project_path
+from project_core import ROOT, project_path
 
 APP_ID = 0x434E5431
 DB_PATH = 'state/todos.sqlite3'
@@ -194,7 +193,7 @@ class TodoStore:
                     current = db.execute('SELECT * FROM tasks WHERE id=?', (task_id,)).fetchone() if isinstance(task_id, str) else None
                     results.append({'operation_id': opid, 'ok': False, 'error': str(exc),
                                     'current_id': current['id'] if current else None,
-                                    'next_action': 'todos get --id <current_id>' if current else None})
+                                    'next_action': 'python agent_cli.py read --id <current_id>' if current else None})
         return results
 
     def _agent_operation(self, db, operation):
@@ -287,35 +286,3 @@ class TodoStore:
         with self.connection() as db:
             db.execute('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
                        (key,json.dumps(value,ensure_ascii=False)))
-
-    def seed_once(self):
-        if self.setting('initial_tasks_loaded', False): return
-        tasks = json.loads((ROOT/'initial-todos.json').read_text(encoding='utf-8'))['tasks']
-        # Idempotent even if interrupted: existing completion/removal is preserved.
-        for task in tasks: self.upsert(**task)
-        self.set_setting('initial_tasks_loaded', True)
-
-
-def main():
-    parser = argparse.ArgumentParser(description='桌面待办：只操作项目自己的待办库')
-    commands = parser.add_subparsers(dest='command', required=True)
-    add = commands.add_parser('add', help='新增或更新；同一 ID 保留勾选/移除状态')
-    add.add_argument('--id'); add.add_argument('--title', required=True)
-    for field in ('due','due-label','note','source'): add.add_argument('--'+field)
-    add.add_argument('--optional', action='store_true')
-    listing = commands.add_parser('list'); listing.add_argument('--all', action='store_true')
-    done = commands.add_parser('done'); done.add_argument('id'); done.add_argument('--undo', action='store_true')
-    remove = commands.add_parser('remove'); remove.add_argument('id'); remove.add_argument('--restore', action='store_true')
-    commands.add_parser('seed')
-    args = parser.parse_args()
-    store = TodoStore()
-    if args.command == 'add':
-        print(store.upsert(args.title,id=args.id,due=args.due,due_label=args.due_label or '',
-                          note=args.note or '',source=args.source or '',optional=args.optional))
-    elif args.command == 'list': print(json.dumps(store.tasks(include_removed=args.all),ensure_ascii=False,indent=2))
-    elif args.command == 'done': store.mark(args.id,not args.undo)
-    elif args.command == 'remove': store.remove(args.id,not args.restore)
-    else: store.seed_once(); print('已放入已确认的待办；原勾选状态不变。')
-
-
-if __name__ == '__main__': main()

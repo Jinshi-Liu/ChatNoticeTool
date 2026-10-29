@@ -12,8 +12,7 @@ from pathlib import Path
 import sys
 
 from agent_config import atomic_json, private_path, read_json
-
-ROOT = Path(__file__).resolve().parent
+from project_core import ROOT
 
 
 def locate(root=None, python=None, remember=False):

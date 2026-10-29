@@ -43,6 +43,10 @@ class IconButton(tk.Canvas):
         if self.kind=='plus': line(18,9,18,27); line(9,18,27,18)
         elif self.kind=='pin':
             line(12,9,24,9); line(14,9,14,17,10,22,26,22,22,17,22,9); line(18,22,18,29)
+        elif self.kind=='document':
+            line(10,7,21,7,27,13,27,29,10,29,10,7)
+            line(21,7,21,13,27,13)
+            line(14,18,23,18); line(14,23,23,23)
         elif self.kind=='check': line(9,18,15,24,27,11)
         elif self.kind=='undo':
             self.create_arc(10*s,11*s,28*s,29*s,start=-90,extent=245,style='arc',
