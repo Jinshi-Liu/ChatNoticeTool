@@ -37,7 +37,7 @@ python examples/adapters/jsonl_adapter.py read --file ABS_FILE --group KEY --con
 | `connect(config,pids,authorized)` | 显式授权取钥，不适用时返回 unsupported_operation |
 | `groups(config)` | 群元数据，单项包含 platform/group_id/name/remark |
 | `read(config,request)` | 仅读取 request.scopes，返回 messages、snapshots 和可选 timings/parse_errors |
-| `attachment_grants(message)` | 返回所需 images_to_agent/documents_to_agent 权限 |
+| `attachment_kinds(message)` | 返回 image/document 媒体类别，无法处理时为 unsupported（不是权限） |
 | `asset_allowed(config,path)` | 校验源资源路径属于当前来源 |
 | `prepare(config,messages,output,pid)` | 只准备选定消息，返回 items 资源清单 |
 
@@ -49,10 +49,10 @@ QQ / 微信由 `LocalSource` 调用 `project_core.ReadScope`、`messages.read_se
 
 ## 相关模块与验证
 
-- `agent_config.py`：来源身份、范围、配置版本与并发。
+- `agent_config.py`：来源身份、选群、配置版本与并发。
 - `agent_sources.py/agent_imports.py`：工厂和导入格式。
 - `agent_processing.py`：消息版本、获取与分析阶段、关联和恢复。
-- `agent_assets.py`：附件权限、路径和缓存失效。
+- `agent_assets.py`：媒体分类、路径和缓存失效。
 - `agent_cli.py`：只保留 read/write；配置参数位于 `agent_setup.py`。
 - `docs/agent/commands.md`：版本化 JSON 与参数参考。
 

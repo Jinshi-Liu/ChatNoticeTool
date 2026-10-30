@@ -22,6 +22,8 @@ py -3.13 -m venv .venv
 
 ## 交给 Agent
 
+将 [`skills/chatnotice`](skills/chatnotice) 文件夹复制到所用 Agent 支持的 skills 目录，再告知 ChatNoticeTool 项目路径。
+
 告诉 Agent 工具所在目录和你的需求：
 
 > 工具在 D:/ChatNoticeTool。帮我连接课程群，把新通知整理成待办。
@@ -40,10 +42,11 @@ python -B -X utf8 agent_cli.py write --input -
 `write` 从标准输入接收待办和处理结果；已有授权不需要反复检查、列群或确认。
 完整参数与 JSON 示例见[读写接口](docs/agent/commands.md)。
 
-## 写自己的规则
+## 管理规则与群聊
 
-点击主窗口 **pin 左侧的文档图标**，直接编辑 `AGENTS.md`，按 **Ctrl+S** 保存。
-规则默认空白，按你的习惯填写。新增待办、完成、编辑和置顶都在窗口内操作。
+点击 **pin 左侧的文档图标**，在「规则」「群聊」之间切换。规则页以更大字号编辑 `AGENTS.md`（默认空白），保存图标或 **Ctrl+S** 仅保存规则。
+群聊页是一张连续只读表，QQ / 微信 / 其他平台仅作行内标识，显示群名、群号及“最后读取”（MM-DD HH:MM，无记录为“尚未读取”，悬停可看完整时间和长 ID）。所有行与空白共用一个纵向滚动区域，底部“修改此配置请与 Agent 沟通”固定不滚走；每5秒仅刷新可见群页的本地元数据，保留位置与选择。新增、修改及移除群由 Agent 通过正式配置接口完成；已选启用群允许全部媒体，内存取钥仍须单次明确授权和 PID。
+切换页签保留规则草稿。规则是否加载、何时重新加载由当前 Agent 宿主决定。旧配置迁移见[配置指南](docs/agent/configuration.md)。
 
 更新源码时，保留自己的 `AGENTS.md`、`config.json`、`state/` 和 `exports/`。
 

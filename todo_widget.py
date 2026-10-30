@@ -13,13 +13,14 @@ from tkinter import messagebox
 
 from todo_store import TodoStore
 from widget_ui import TaskCanvas, SegmentedControl, BG, MUTED, ACCENT, RED
-from glass_style import IconButton
+from glass_style import IconButton, set_topmost, bind_topmost
 from todo_detail import DetailWindow
 from rules_editor import RulesEditor
 from project_core import WIDGET_MUTEX
 
 TITLE = '群消息待办'
 MUTEX = WIDGET_MUTEX
+MAIN_MIN_WIDTH = 390
 
 
 def deadline_badge(task: dict, now: datetime | None = None) -> tuple[str,str]:
@@ -55,7 +56,7 @@ class TodoWidget:
         self.compact=False
         root.title(TITLE)
         root.configure(bg=BG)
-        root.minsize(220, 160)
+        root.minsize(MAIN_MIN_WIDTH, 160)
         width, height = 500, min(700, root.winfo_screenheight()-110)
         x, y = max(0,root.winfo_screenwidth()-width-35), 45
         saved = store.setting('geometry')
@@ -65,11 +66,12 @@ class TodoWidget:
                 sw,sh,sx,sy = map(int,match.groups())
                 if 220 <= sw <= root.winfo_screenwidth() and 160 <= sh <= root.winfo_screenheight() and sx < root.winfo_screenwidth()-80 and sy < root.winfo_screenheight()-80:
                     width,height,x,y = sw,sh,sx,sy
-        width=max(220,width)
+        width=max(MAIN_MIN_WIDTH,width)
         x=min(x,max(0,root.winfo_screenwidth()-width-12))
         root.geometry(f'{width}x{height}+{x}+{y}')
         self.pinned = bool(store.setting('pinned', True))
-        root.attributes('-topmost', self.pinned)
+        set_topmost(root, self.pinned)
+        bind_topmost(root, lambda: self.pinned)
         icon = Path(__file__).resolve().parent/'todo.ico'
         if icon.is_file():
             try: root.iconbitmap(default=str(icon)); root.iconbitmap(str(icon))
@@ -117,25 +119,19 @@ class TodoWidget:
         compact=width<420 or height<300
         self.compact=compact
         margin=8 if compact else 24
-        size=28 if compact else 48
+        size=48
         self.segment.set_compact(compact)
-        buttons=(self.document_button,self.pin_button,self.add_button)
-        for column,button in enumerate(buttons):
-            button.set_size(size)
-            # Reserve focus-ring space so keyboard focus cannot change the layout.
-            self.toolbar.columnconfigure(column,minsize=size+2+(4 if column<2 else 0))
-        required=int(self.segment.cget('width'))+8+3*(size+2)+8
-        stacked=required>width-2*margin
-        layout=(compact,stacked,int(self.segment.cget('width')))
+        layout=(compact,int(self.segment.cget('width')))
         if layout!=getattr(self,'header_layout',None):
             self.header_layout=layout
+            for column in range(3):
+                self.toolbar.columnconfigure(column,minsize=size+2+(4 if column<2 else 0))
             self.header.pack_configure(padx=margin,pady=(6,0) if compact else (18,4))
             self.body.pack_configure(padx=(6,4) if compact else (18,10))
-            self.segment.grid(row=0,column=0,sticky='w')
-            self.toolbar.grid(row=1 if stacked else 0,column=0 if stacked else 1,
-                              sticky='w' if stacked else 'ne',
-                              padx=0 if stacked else (8,0),
-                              pady=(0,2) if stacked else (max(0,28-(size+2)//2),0))
+            # The flexible tab column yields space before the fixed toolbar.
+            self.segment.grid(row=0,column=0,sticky='ew')
+            self.toolbar.grid(row=0,column=1,sticky='ne',padx=(8,0),
+                              pady=(max(0,28-(size+2)//2),0))
         self.canvas.set_compact(compact)
 
     def open_rules(self):
@@ -152,7 +148,7 @@ class TodoWidget:
 
     def toggle_pin(self):
         self.pinned = not self.pinned
-        self.root.attributes('-topmost',self.pinned)
+        set_topmost(self.root,self.pinned)
         self.update_pin()
         self.safe(lambda:self.store.set_setting('pinned',self.pinned))
 

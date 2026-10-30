@@ -56,10 +56,7 @@ class AgentFixture(unittest.TestCase):
         self.temp.cleanup()
 
     def add_group(self, group_id, **kwargs):
-        row = {'source_id': self.source['id'], 'group_id': group_id, 'name': '合成课程群',
-               'since': NOW - 3 * 86400, 'max_days': 7, 'instructions': '结合图片和文字整理通知',
-               'recipient': '当前测试Agent',
-               'grant': {'text_to_agent': True, 'images_to_agent': True, 'documents_to_agent': False}, **kwargs}
+        row = {'source_id': self.source['id'], 'group_id': group_id, 'name': '合成课程群', **kwargs}
         payload = {'confirmed': True, 'expected_revision': self.config.load()['revision'], 'groups': [row]}
         return self.config.apply_groups(payload)['groups'][0]
 
@@ -237,15 +234,15 @@ class IncrementalTests(AgentFixture):
         self.assertEqual(message_key(self.source, a), message_key(self.source, b))
 
     def test_multiple_groups_one_source_call_and_exact_windows(self):
-        second = self.add_group('456', since=NOW - 86400)
+        second = self.add_group('456')
         self.data = [self.message(), self.message(2, '456')]
         page = self.read()
         self.assertEqual(page['total'], 2)
         self.read_mock.assert_called_once()
         scopes = self.read_mock.call_args.args[1]['scopes']
-        self.assertEqual(len(scopes), 2)
-        self.assertEqual({s['group_ids'][0] for s in scopes}, {'123', '456'})
-        self.assertEqual(next(s['since'] for s in scopes if s['group_ids'] == ['456']), second['since'])
+        self.assertEqual(len(scopes), 1)
+        self.assertEqual(set(scopes[0]['group_ids']), {'123', '456'})
+        self.assertEqual(scopes[0]['since'], NOW - 7 * 86400)
 
     def test_out_of_scope_rows_fail_without_advancing(self):
         self.read_mock.side_effect = None
@@ -309,7 +306,7 @@ class IncrementalTests(AgentFixture):
         self.data = [self.message()]
         page = self.read()
         self.commit_results(self.commit_payload(page))
-        self.add_group('123', instructions='新规则')
+        self.add_group('123', name='新群名')
         with self.assertRaises(AgentError):
             self.read(batch_id=page['batch_id'])
         self.assertEqual(self.read()['total'], 0)
@@ -334,24 +331,23 @@ class IncrementalTests(AgentFixture):
         self.assertEqual(self.read()['total'], 0)
 
     def test_historical_backfill_must_not_skip_gap(self):
-        self.data = []
-        self.read(since=NOW - 86400)
+        self.read(since=NOW - 30 * 86400, until=NOW - 23 * 86400)
+        self.read(since=NOW - 10 * 86400, until=NOW)
         with ProcessingStore(self.root).connection() as db:
-            self.assertEqual(db.execute('SELECT COUNT(*) FROM progress').fetchone()[0], 0)
+            self.assertEqual(db.execute('SELECT observed_until FROM progress').fetchone()[0], NOW - 23 * 86400)
         with self.assertRaises(AgentError):
-            self.read(since=NOW - 10 * 86400)
+            self.read(since=-1)
 
-    def test_long_gap_advances_with_one_day_limit(self):
-        self.add_group('123', since=NOW - 10 * 86400, max_days=1)
+
+    def test_long_gap_advances_with_operational_window(self):
         untils = []
         for index in range(3):
-            # Explicitly begin historical catchup; default first reads now
-            # start with recent messages rather than old authorization floors.
-            self.read(**({'since': NOW - 10 * 86400} if index == 0 else {}))
+            self.read(**({'since': NOW - 30 * 86400} if index == 0 else {}))
             with ProcessingStore(self.root).connection() as db:
                 untils.append(db.execute('SELECT observed_until FROM progress').fetchone()[0])
         self.assertLess(untils[0], untils[1])
         self.assertLess(untils[1], untils[2])
+
 
     def test_processed_neighbor_is_read_only_context_for_new_image(self):
         self.data = [self.message(1, text='下图是本周作业', timestamp=NOW - 200)]
@@ -595,14 +591,14 @@ class AssetTests(AgentFixture):
                 prepare(ProcessingStore(self.root), args)
         self.assertEqual(collect.call_count, 2)
 
-    def test_no_image_grant_no_file_read(self):
+    def test_selected_group_images_need_no_separate_media_grant(self):
         self.setup_image()
-        self.add_group('123', grant={'text_to_agent': True, 'images_to_agent': False, 'documents_to_agent': False})
         page = self.read()
-        with patch('attachments.collect') as collect:
+        with patch('attachments.collect', side_effect=self.fake_collect) as collect:
             result = prepare(ProcessingStore(self.root), {'batch_id': page['batch_id'], 'message_keys': [page['messages'][0]['message_key']]})
-        self.assertEqual(result['results'][0]['status'], 'scope_denied')
-        collect.assert_not_called()
+        self.assertEqual(result['results'][0]['status'], 'prepared')
+        collect.assert_called_once()
+
 
     def test_unread_image_cannot_mark_done_and_skip_requires_reason(self):
         self.setup_image()
@@ -662,7 +658,7 @@ class SnapshotAndCliTests(unittest.TestCase):
             (component / 'state/component-location.json').write_text('[]', encoding='utf-8')
             with self.assertRaises(ValueError):
                 module.locate(str(component))
-        self.assertFalse((ROOT / 'skills/chatnotice/SKILL.md').exists())
+        self.assertTrue((ROOT / 'skills/chatnotice/SKILL.md').is_file())
         for ref in ('workflow.md', 'configuration.md', 'commands.md', 'troubleshooting.md', 'extending.md'):
             self.assertTrue((ROOT / 'docs/agent' / ref).is_file())
 

@@ -77,8 +77,10 @@ class TaskCanvas(tk.Canvas):
         self.rows={}; self.order=[]; self.tasks={}; self.checkbuttons={}; self.checkvars={}
         self.width=350; self.height=400; self.content_height=0; self.extent=400
         self.selected=None; self.empty=None; self.empty_text=''; self.compact=False
-        self.visual_state=None; self.layout_count=0
+        self.visual_state=None; self.layout_count=0; self.resize_pending=None
+        self.scroll_target=0.0
         self.bind('<Configure>',self.resize)
+        self.bind('<Destroy>',self.cancel_layout,add='+')
         self.bind('<MouseWheel>',self.wheel)
         self.bind('<Up>',lambda e:self.navigate(-1))
         self.bind('<Down>',lambda e:self.navigate(1))
@@ -158,16 +160,32 @@ class TaskCanvas(tk.Canvas):
     def set_compact(self,value):
         if self.compact==value: return
         self.compact=value
+        self.schedule_layout()
+
+    def schedule_layout(self):
+        if self.resize_pending is None:
+            self.resize_pending=self.after_idle(self.flush_layout)
+
+    def cancel_layout(self,event):
+        if event.widget == self and self.resize_pending is not None:
+            self.after_cancel(self.resize_pending)
+            self.resize_pending=None
+
+    def flush_layout(self):
+        self.resize_pending=None
         self.layout()
 
     def resize(self,event):
         if (event.width,event.height)==(self.width,self.height): return
         self.width,self.height=event.width,event.height
-        self.layout()
+        self.schedule_layout()
 
     def layout(self,reset_scroll=False):
+        if self.resize_pending is not None:
+            self.after_cancel(self.resize_pending)
+            self.resize_pending=None
         self.layout_count+=1
-        old_top=max(0,self.canvasy(0))
+        old_top=self.scroll_target
         y=4; right=max(80,self.width-8); text_width=max(20,right-(61 if self.compact else 83))
         left=12 if self.compact else 24; top=10 if self.compact else 20
         for index,id in enumerate(self.order):
@@ -217,16 +235,20 @@ class TaskCanvas(tk.Canvas):
     def scroll_pixels(self,target):
         maximum=max(0,self.content_height-self.height)
         target=max(0,min(float(target),maximum))
-        self.yview_moveto(target/max(1,self.extent))
+        self.scroll_target=target
+        # Tk quantizes the view to pixels; retain the fractional target so small
+        # precision-wheel deltas accumulate rather than disappearing.
+        if abs(self.canvasy(0)-target)>=0.5:
+            self.yview_moveto(target/max(1,self.extent))
 
     def scroll_command(self,*args):
         if args[0]=='moveto': self.scroll_pixels(float(args[1])*self.extent)
         elif args[0]=='scroll':
             pixels=28 if args[2]=='units' else max(28,self.height*.85)
-            self.scroll_pixels(self.canvasy(0)+int(args[1])*pixels)
+            self.scroll_pixels(self.scroll_target+int(args[1])*pixels)
 
     def wheel(self,event):
-        self.scroll_pixels(self.canvasy(0)-event.delta/120*56)
+        self.scroll_pixels(self.scroll_target-event.delta/120*56)
         return 'break'
 
     def click_row(self,id,event):

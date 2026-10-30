@@ -66,15 +66,12 @@ class BackendInterfaceTests(AgentFixture):
         self.assertEqual(process.returncode, 0, process.stderr)
         self.assertIn('daily-only', process.stdout)
 
-    def test_all_attachments_opt_in_preserves_document_and_image_grants(self):
+    def test_all_attachments_opt_in_needs_no_media_permissions(self):
         self.assets(mixed=True)
         with patch('attachments.collect', side_effect=self.collect) as collect:
             default = self.service.read()
             self.assertEqual(default['attachments'][0]['status'], 'not_requested')
-            denied = self.service.read(attachments=True)
-            self.assertEqual(denied['attachments'][0]['status'], 'scope_denied')
             collect.assert_not_called()
-            self.add_group('123', grant={'text_to_agent': True, 'images_to_agent': True, 'documents_to_agent': True})
             page = self.service.read(attachments=True, prepare_images=False)
         self.assertEqual(page['attachments'][0]['status'], 'prepared')
         self.assertEqual(len(page['attachments'][0]['items']), 2)

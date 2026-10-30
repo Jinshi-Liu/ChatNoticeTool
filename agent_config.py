@@ -11,7 +11,9 @@ import uuid
 
 from project_core import ROOT, parse_bound
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+# Accepted only when reading an old on-disk configuration, never new writes.
+LEGACY_GROUP_FIELDS = {'since', 'until', 'max_days', 'recipient', 'instructions', 'grant'}
 MAX_INPUT = 1024 * 1024
 PLATFORMS = ('qq', 'wechat')
 
@@ -96,11 +98,28 @@ class AgentConfig:
         if not self.path.exists():
             return {'schema_version': SCHEMA_VERSION, 'revision': 0, 'sources': {}, 'groups': {}}
         value = read_json(self.path)
-        if not isinstance(value, dict) or value.get('schema_version') != SCHEMA_VERSION:
+        if not isinstance(value, dict) or value.get('schema_version') not in (1, SCHEMA_VERSION):
             raise AgentError('config_version', '配置版本不兼容，拒绝读取或降级写入')
         if type(value.get('revision')) is not int or not isinstance(value.get('sources'), dict) or not isinstance(value.get('groups'), dict):
             raise AgentError('invalid_config', 'Agent配置结构损坏，请恢复备份')
+        if value['schema_version'] == 1:
+            # Read compatibility is side-effect free. A confirmed change/migrate
+            # persists v2; inspecting settings never rewrites a user's config.
+            value['groups'] = {key: {k: v for k, v in group.items() if k not in LEGACY_GROUP_FIELDS}
+                               for key, group in value['groups'].items()}
+            value['schema_version'] = SCHEMA_VERSION
         return value
+
+    def migration_status(self):
+        if not self.path.exists():
+            return {'migration_required': False}
+        return {'migration_required': read_json(self.path).get('schema_version') == 1,
+                'migration_notice': '迁移保留账号、选群及启停；移除旧范围、交付、说明和媒体权限，已选启用群允许全部媒体。旧批次须重新read，去重和pending保留。'}
+
+    def migrate(self, payload):
+        """Explicit, revision-checked migration; no client or processing access."""
+        return self.change(payload, lambda value: {'schema_version': SCHEMA_VERSION,
+                                                 'notice': '已迁移；旧批次请重新read，单次取钥仍须明确授权及PID。'})
 
     @contextmanager
     def locked(self):
@@ -128,7 +147,7 @@ class AgentConfig:
             value['updated_at'] = int(time.time())
             value['installation'] = {'root': str(self.root), 'python': os.path.abspath(os.sys.executable)}
             if len(encode(value).encode('utf-8')) > MAX_INPUT:
-                raise AgentError('config_too_large', '配置超过1MiB限制，请缩短群说明或减少配置项')
+                raise AgentError('config_too_large', '配置超过1MiB限制，请减少配置项')
             atomic_json(self.path, value)
         return {'revision': value['revision'], **result}
 
@@ -166,27 +185,17 @@ class AgentConfig:
                 raise AgentError('invalid_input', '群配置必须是对象')
             source = self.source(row.get('source_id'), value)
             group_id = text(row.get('group_id'), 'group_id', 200)
-            since = bound(row.get('since'), 'since')
-            until = bound(row['until'], 'until') if row.get('until') is not None else None
+            if set(row) - {'key', 'source_id', 'group_id', 'name', 'enabled'}:
+                raise AgentError('invalid_input', '群配置仅接受source_id、group_id、name和enabled；旧配置请使用migrate接口')
             from agent_sources import get_source
-            get_source(source['platform']).validate_scope(group_id, since, until if until is not None else since + 1)
-            days = row.get('max_days', 7)
-            if type(days) is not int or not 1 <= days <= 31:
-                raise AgentError('invalid_input', 'max_days必须是1到31的整数')
-            grant = row.get('grant')
-            if (not isinstance(grant, dict) or set(grant) != {'text_to_agent', 'images_to_agent', 'documents_to_agent'}
-                    or any(type(v) is not bool for v in grant.values()) or not grant['text_to_agent']):
-                raise AgentError('invalid_input', 'grant必须明确确认正文、图片和文档交付权限；正文须允许')
-            recipient = text(row.get('recipient'), 'recipient', 300)
+            get_source(source['platform']).validate_scope(group_id, 0, 1)
             enabled = row.get('enabled', True)
             if type(enabled) is not bool:
                 raise AgentError('invalid_input', 'enabled必须是布尔值')
             key = source['id'] + '/' + group_id
             result.append({'key': key, 'source_id': source['id'], 'group_id': group_id,
                            'name': text(row.get('name', group_id), 'name', 300),
-                           'instructions': text(row.get('instructions', ''), 'instructions', 8000, empty=True),
-                           'since': since, 'until': until, 'max_days': days, 'enabled': enabled,
-                           'grant': grant, 'recipient': recipient})
+                           'enabled': enabled})
         if len({g['key'] for g in result}) != len(result):
             raise AgentError('invalid_input', '群配置重复')
         return result
@@ -198,7 +207,7 @@ class AgentConfig:
         rows = self.normalize_groups(payload, value)
         return {'expected_revision': value['revision'], 'changes': [
             {'before': value['groups'].get(g['key']), 'after': g} for g in rows],
-            'notice': '本操作只配置授权和规则，不读取正文。内容交给当前Agent可能离开本机。'}
+            'notice': '只配置选群和启停，不读取正文；已选启用群允许全部媒体。内容交给当前Agent可能离开本机。'}
 
     def apply_groups(self, payload):
         def update(value):
@@ -206,6 +215,27 @@ class AgentConfig:
             for row in rows:
                 value['groups'][row['key']] = row
             return {'groups': rows}
+        return self.change(payload, update)
+
+    def edit_groups(self, payload):
+        """Apply Agent-reviewed group edits, including ID changes/removals, together."""
+        def update(value):
+            supplied = payload.get('groups', [])
+            if not isinstance(supplied, list):
+                raise AgentError('invalid_input', 'groups必须是列表')
+            rows = self.normalize_groups(payload, value) if supplied else []
+            removed = payload.get('remove_keys', [])
+            if (not isinstance(removed, list) or any(not isinstance(k, str) for k in removed)
+                    or len(set(removed)) != len(removed)
+                    or any(k not in value['groups'] for k in removed)):
+                raise AgentError('group_not_found', '移除项须是当前配置中不重复的群key')
+            if not rows and not removed:
+                raise AgentError('invalid_input', '没有需要保存的群聊变更')
+            for key in removed:
+                del value['groups'][key]
+            for row in rows:
+                value['groups'][row['key']] = row
+            return {'groups': rows, 'removed': removed}
         return self.change(payload, update)
 
     def remove_groups(self, payload):
@@ -227,7 +257,7 @@ class AgentConfig:
         result = []
         for key in keys:
             row = value['groups'].get(key)
-            if not row or not row['enabled'] or not row['grant']['text_to_agent']:
+            if not row or not row['enabled']:
                 raise AgentError('scope_denied', '群未授权、已停用或已撤销')
             self.source(row['source_id'], value)
             result.append(row)

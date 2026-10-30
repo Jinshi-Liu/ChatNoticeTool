@@ -2,6 +2,33 @@
 The historical filename is kept for import compatibility.
 """
 import tkinter as tk
+import sys
+import ctypes
+
+
+def set_topmost(window, value):
+    """Update Tk's preference and, when mapped, its Win32 wrapper without activation."""
+    window.attributes('-topmost', bool(value))
+    if sys.platform != 'win32' or not window.winfo_ismapped():
+        return
+    from ctypes import wintypes as W
+    user = ctypes.WinDLL('user32', use_last_error=True)
+    user.GetParent.argtypes = [W.HWND]; user.GetParent.restype = W.HWND
+    user.SetWindowPos.argtypes = [W.HWND, W.HWND, ctypes.c_int, ctypes.c_int,
+                                  ctypes.c_int, ctypes.c_int, W.UINT]
+    user.SetWindowPos.restype = W.BOOL
+    hwnd = user.GetParent(window.winfo_id()) or window.winfo_id()
+    insert_after = W.HWND(-1 if value else -2)
+    if not user.SetWindowPos(hwnd, insert_after, 0, 0, 0, 0, 0x0013):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def bind_topmost(window, get_value):
+    # Tk can defer attributes while withdrawn; reapply once after each map.
+    def mapped(event):
+        if event.widget == window:
+            window.after_idle(lambda: set_topmost(window, get_value()) if window.winfo_exists() else None)
+    window.bind('<Map>', mapped, add='+')
 
 BG='#F5F5F5'
 CARD='#FFFFFF'
@@ -15,7 +42,7 @@ FONT='Microsoft YaHei UI'
 
 class IconButton(tk.Canvas):
     def __init__(self,parent,kind,command,*,bg=BG,size=48,color=INK):
-        super().__init__(parent,width=size,height=size,bg=bg,highlightthickness=0,bd=0,
+        super().__init__(parent,width=size,height=size,bg=bg,highlightthickness=1,highlightbackground=bg,bd=0,
                          takefocus=True,cursor='hand2')
         self.kind,self.command,self.color,self.size=kind,command,color,size
         self.active=False
@@ -25,8 +52,8 @@ class IconButton(tk.Canvas):
         self.bind('<Return>',lambda e:self.invoke())
         self.bind('<Enter>',lambda e:self.configure(bg=CARD))
         self.bind('<Leave>',lambda e:self.configure(bg=bg))
-        self.bind('<FocusIn>',lambda e:self.configure(highlightthickness=1,highlightbackground=ACCENT))
-        self.bind('<FocusOut>',lambda e:self.configure(highlightthickness=0))
+        self.bind('<FocusIn>',lambda e:self.configure(highlightbackground=ACCENT))
+        self.bind('<FocusOut>',lambda e:self.configure(highlightbackground=bg))
     def invoke(self): return self.command()
     def set_active(self,value):
         self.active=bool(value); self.paint()

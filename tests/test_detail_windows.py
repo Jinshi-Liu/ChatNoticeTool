@@ -32,6 +32,73 @@ class DetailTests(unittest.TestCase):
     def open(self,id):
         editor=self.app.details(self.store.get(id)); editor.window.withdraw()
         self.root.update(); return editor
+    def test_native_topmost_matches_tk_after_toggle_and_remap(self):
+        import ctypes
+        from ctypes import wintypes as W
+        user=ctypes.WinDLL('user32',use_last_error=True)
+        user.GetParent.argtypes=[W.HWND]; user.GetParent.restype=W.HWND
+        user.GetWindowLongW.argtypes=[W.HWND,ctypes.c_int]; user.GetWindowLongW.restype=ctypes.c_long
+        a=self.open('a'); b=self.open('b')
+        for window in (self.root,a.window,b.window): window.deiconify()
+        self.root.update()
+        def check(window,expected):
+            hwnd=user.GetParent(window.winfo_id()) or window.winfo_id()
+            self.assertEqual(bool(user.GetWindowLongW(hwnd,-20)&8),expected)
+            self.assertEqual(bool(window.attributes('-topmost')),expected)
+        check(self.root,True); check(a.window,False); check(b.window,False)
+        a.toggle_pin(); self.app.toggle_pin(); self.root.update()
+        check(self.root,False); check(a.window,True); check(b.window,False)
+        a.window.withdraw(); self.root.update(); a.window.deiconify(); self.root.update()
+        check(a.window,True)
+        a.toggle_pin(); self.root.update(); check(a.window,False)
+
+    def test_resize_burst_coalesces_canvas_layout(self):
+        from types import SimpleNamespace
+        canvas=self.app.canvas
+        self.root.deiconify(); self.root.update()
+        before=canvas.layout_count
+        for width in range(250,350):
+            canvas.resize(SimpleNamespace(width=width,height=200))
+        self.assertEqual(canvas.layout_count,before)
+        self.root.update_idletasks()
+        self.assertEqual(canvas.layout_count,before+1)
+        self.assertEqual((canvas.width,canvas.height),(349,200))
+
+    def test_main_wheel_and_scrollbar_precision_and_isolation(self):
+        from types import SimpleNamespace
+        for i in range(12): self.store.upsert('合成事项'+str(i),id='wheel'+str(i))
+        self.app.render(); self.root.geometry('500x300+20+20'); self.root.deiconify()
+        detail=self.open('a'); detail.window.deiconify(); self.root.update()
+        canvas=self.app.canvas; scrollbar=self.app.scrollbar
+        before=canvas.layout_count
+        canvas.event_generate('<MouseWheel>',delta=-120); self.root.update()
+        self.assertAlmostEqual(canvas.canvasy(0),56,delta=1)
+        scrollbar.event_generate('<MouseWheel>',delta=-120); self.root.update()
+        self.assertAlmostEqual(canvas.canvasy(0),112,delta=1)
+        self.assertAlmostEqual(float(scrollbar.get()[0]),canvas.canvasy(0)/canvas.extent,delta=.002)
+        canvas.scroll_pixels(0)
+        for _ in range(120): canvas.wheel(SimpleNamespace(delta=-1))
+        self.assertAlmostEqual(canvas.canvasy(0),56,delta=1)
+        for _ in range(120): canvas.wheel(SimpleNamespace(delta=1))
+        self.assertAlmostEqual(canvas.canvasy(0),0,delta=1)
+        canvas.scroll_pixels(1e9)
+        canvas.wheel(SimpleNamespace(delta=-120))
+        self.assertEqual(canvas.scroll_target,max(0,canvas.content_height-canvas.height))
+        canvas.scroll_command('moveto','0.5')
+        self.assertAlmostEqual(canvas.canvasy(0),canvas.extent*.5,delta=1)
+        canvas.scroll_command('scroll',-1,'units')
+        self.assertAlmostEqual(canvas.canvasy(0),canvas.extent*.5-28,delta=1)
+        self.assertEqual(canvas.layout_count,before)
+        self.assertEqual(detail.page_canvas.canvasy(0),0)
+
+    def test_canvas_destroy_cancels_pending_resize_layout(self):
+        canvas=self.app.canvas
+        canvas.schedule_layout()
+        pending=canvas.resize_pending
+        canvas.destroy()
+        self.assertNotIn(pending,self.root.tk.call('after','info'))
+        self.root.update()
+
     def test_multiple_details_no_grab_and_main_operable(self):
         a=self.open('a'); b=self.open('b')
         self.assertNotEqual(a.window,b.window)
@@ -268,12 +335,13 @@ class DetailTests(unittest.TestCase):
         self.root.geometry('220x160+20+20'); self.root.deiconify()
         a.window.geometry('220x160+260+20'); a.window.deiconify()
         b.window.deiconify(); self.root.update()
-        self.assertEqual(self.root.minsize(),(220,160))
+        self.assertEqual(self.root.minsize(),(390,160))
         self.assertEqual(a.window.minsize(),(220,160))
         self.assertTrue(self.app.compact); self.assertTrue(a.compact); self.assertFalse(b.compact)
         for button in (self.app.document_button,self.app.add_button,self.app.pin_button,a.complete_button,a.pin_button):
             self.assertTrue(button.winfo_viewable())
-            self.assertEqual(button.size,28)
+            self.assertEqual(button.size,48)
+            self.assertEqual((button.winfo_width(),button.winfo_height()),(50,50))
         for button in (self.app.document_button,self.app.add_button,self.app.pin_button):
             self.assertLessEqual(button.winfo_rootx()+button.winfo_width(),self.root.winfo_rootx()+self.root.winfo_width())
         self.assertGreater(a.note.winfo_height(),20)
@@ -333,8 +401,21 @@ class DetailTests(unittest.TestCase):
             self.assertGreaterEqual(boxes[4][1],max(box[3] for box in boxes[:4]))
         self.assertEqual(int(self.root.tk.splitlist(segment.itemcget(segment.right,'font'))[1]),-32)
 
+    def test_toolbar_stays_fixed_when_tab_counts_expand(self):
+        self.root.geometry('390x200+20+20'); self.root.deiconify(); self.root.update()
+        buttons=(self.app.document_button,self.app.pin_button,self.app.add_button)
+        before=[(b.winfo_rootx(),b.winfo_rooty(),b.winfo_width(),b.winfo_height()) for b in buttons]
+        self.app.segment.update_state(123456789,123456789,False)
+        self.app.layout_header(); self.root.update()
+        after=[(b.winfo_rootx(),b.winfo_rooty(),b.winfo_width(),b.winfo_height()) for b in buttons]
+        self.assertEqual(before,after)
+        self.assertEqual(int(self.app.toolbar.grid_info()['row']),0)
+        self.assertTrue(all(w==50 and h==50 for _,_,w,h in after))
+        self.assertEqual(after[1][0]-after[0][0],54)
+        self.assertEqual(after[2][0]-after[1][0],54)
+
     def test_header_five_controls_share_one_alignment_when_wide(self):
-        for width,height in ((367,180),(500,700)):
+        for width,height in ((500,700),):
             self.root.geometry(f'{width}x{height}+20+20'); self.root.deiconify(); self.root.update()
             self.assertEqual(self.app.segment.winfo_manager(),'grid')
             self.assertEqual(int(self.app.toolbar.grid_info()['row']),0)
@@ -346,13 +427,12 @@ class DetailTests(unittest.TestCase):
         try:
             for scale in (1,1.5,2,3):
                 self.root.tk.call('tk','scaling',scale)
-                for width in (220,250,280,367,500,220):
+                for width in (390,400,460,500,390):
                     with self.subTest(scale=scale,width=width):
                         self.root.geometry(f'{width}x160+20+20'); self.root.update()
                         self.app.layout_header(); self.root.update()
                         self.assert_header_geometry()
-                        required=int(self.app.segment.cget('width'))+8+3*30+8
-                        self.assertEqual(int(self.app.toolbar.grid_info()['row']),int(required>width-16))
+                        self.assertEqual(int(self.app.toolbar.grid_info()['row']),0)
         finally: self.root.tk.call('tk','scaling',old)
 
     def test_document_button_opens_single_modeless_rules_editor(self):
@@ -406,12 +486,12 @@ class DetailTests(unittest.TestCase):
         self.assertTrue(self.store.setting('detail_geometry:a').startswith('220x160'))
         self.assertEqual(self.store.get('a')['note'],'原内容')
 
-    def test_small_saved_main_geometry_is_not_expanded(self):
+    def test_small_saved_main_geometry_is_clamped(self):
         import tkinter as tk
         self.app.close()
         self.store.set_setting('geometry','220x160+20+20')
         self.root=tk.Tk(); self.app=TodoWidget(self.root,self.store,rules_path=self.rules_path); self.root.update()
-        self.assertEqual((self.root.winfo_width(),self.root.winfo_height()),(220,160))
+        self.assertEqual((self.root.winfo_width(),self.root.winfo_height()),(390,160))
         self.assertTrue(self.app.compact)
 
     def test_plus_draft_saves_in_small_window(self):

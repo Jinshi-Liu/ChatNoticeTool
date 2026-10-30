@@ -12,21 +12,18 @@
 
 `collection` 默认 inbox，是本地命名空间，不代表真实平台群。不同 collection 相互隔离。
 
-再通过 `groups plan/apply --input -` 配置分组；版本号与时间范围使用当前返回值和实际确认范围：
+再通过 `groups plan/apply --input -` 配置分组；版本号使用当前返回值：
 
 ```json
 {
   "expected_revision":1,"confirmed":true,
   "groups":[{
-    "source_id":"SOURCE_ID","group_id":"inbox","name":"待整理素材",
-    "since":"2020-01-01T00:00:00+08:00","max_days":7,
-    "recipient":"当前Agent/服务",
-    "grant":{"text_to_agent":true,"images_to_agent":true,"documents_to_agent":true}
+    "source_id":"SOURCE_ID","group_id":"inbox","name":"待整理素材"
   }]
 }
 ```
 
-本地分组可自行命名，无需先从客户端发现群。处理历史文件时，相应原始时间也需在授权范围内。
+本地分组可自行命名，无需先从客户端发现群。已选分组允许全部媒体，不另配时间或交付权限。
 
 ## 导入与处理
 
@@ -70,7 +67,7 @@ read --file ABS_FILE --group KEY --confirm [--format auto] [--timestamp ISO_TIME
 - 附件只访问所选 JSON 目录内明确引用的文件，不接受 `..`、绝对路径、URL、符号链接或目录联接。图片/文档交付分别检查。
 - 文件缺失、非法类型、重复消息ID或越界等明确失败，不静默丢弃记录。
 
-上限：JSON 32MiB、纯文本4MiB、每批10000条、单条50个附件、每批200个附件、单附件32MiB、总附件128MiB。消息跨度受分组 `max_days` 限制，时间须在授权范围内且不晚于导入时刻。
+上限：JSON 32MiB、纯文本4MiB、每批10000条、单条50个附件、每批200个附件、单附件32MiB、总附件128MiB。不限制历史跨度；消息时间须非负且不晚于导入时刻。
 
 ## 存储与恢复
 

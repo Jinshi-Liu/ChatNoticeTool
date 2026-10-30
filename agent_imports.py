@@ -196,7 +196,7 @@ class ImportSource:
                 raise AgentError('invalid_encoding', '文本须为UTF-8，不会静默替换未知编码') from None
         return [{'attachments': [{'path': path.name, **({'kind': format} if format != 'file' else {})}]}]
 
-    def _asset(self, store, source, descriptor, grant, budget):
+    def _asset(self, store, source, descriptor, budget):
         before = stamp(source)
         if before[2] > MAX_FILE:
             raise AgentError('input_too_large', '单个附件超过32MiB限制')
@@ -217,8 +217,6 @@ class ImportSource:
             raise AgentError('unsupported_import_format', '不支持此文件类型，不执行或猜测任意文件内容')
         if descriptor.get('kind', kind) != kind:
             raise AgentError('invalid_input', '附件kind与实际文件类型不符')
-        if not grant['images_to_agent' if kind == 'image' else 'documents_to_agent'] or (suffix == '.zip' and not grant['images_to_agent']):
-            raise AgentError('scope_denied', '该文件所需的图片/文档交付权限未授权')
         asset_dir = private_path(store.root, store.relative + '/assets')
         asset_dir.mkdir(parents=True, exist_ok=True)
         temporary = asset_dir / (uuid.uuid4().hex + '.tmp')
@@ -273,8 +271,8 @@ class ImportSource:
                 raise AgentError('invalid_input', '消息需有正文或附件，单条附件最多50个')
             stamp_value = bound(row['timestamp'], 'timestamp') if row.get('timestamp') is not None else fallback
             explicit_time = row.get('timestamp') is not None or timestamp is not None
-            if explicit_time and (type(stamp_value) is not int or not group['since'] <= stamp_value <= now or (group['until'] is not None and stamp_value >= group['until'])):
-                raise AgentError('scope_denied', '消息时间超出授权范围或晚于本次导入时刻')
+            if explicit_time and (type(stamp_value) is not int or not 0 <= stamp_value <= now):
+                raise AgentError('invalid_input', '消息时间须在Unix纪元之后且不晚于本次导入时刻')
             descriptors = []
             for item in files:
                 if isinstance(item, str):
@@ -288,7 +286,7 @@ class ImportSource:
         with store.connection(create=True) as db:
             db.execute('BEGIN IMMEDIATE')
             for row, body, stamp_value, descriptors in prepared:
-                assets = [self._asset(store, source, item, group['grant'], budget) for source, item in descriptors]
+                assets = [self._asset(store, source, item, budget) for source, item in descriptors]
                 explicit_time = row.get('timestamp') is not None or timestamp is not None
                 identity = row.get('id')
                 if identity is None:
@@ -302,8 +300,8 @@ class ImportSource:
                 previous = db.execute('SELECT payload,timestamp FROM records WHERE group_id=? AND message_id=?', (group['group_id'], identity)).fetchone()
                 if previous and not explicit_time:
                     stamp_value = previous['timestamp']
-                if not group['since'] <= stamp_value <= now or (group['until'] is not None and stamp_value >= group['until']):
-                    raise AgentError('scope_denied', '首次导入时间不在当前授权范围，请明确消息时间或重新确认范围')
+                if not 0 <= stamp_value <= now:
+                    raise AgentError('invalid_input', '消息时间须在Unix纪元之后且不晚于本次导入时刻')
                 message = {'platform': self.platform, 'group_id': group['group_id'], 'group_name': group['name'],
                            'message_id': identity, 'source_id': self.platform + ':' + digest([group['group_id'], identity]), 'timestamp': stamp_value,
                            'timestamp_basis': 'provided' if explicit_time else (json.loads(previous['payload']).get('timestamp_basis', 'imported') if previous else 'imported'),
@@ -315,10 +313,6 @@ class ImportSource:
                 db.execute('INSERT INTO records VALUES(?,?,?,?) ON CONFLICT(group_id,message_id) DO UPDATE SET timestamp=excluded.timestamp,payload=excluded.payload',
                            (group['group_id'], identity, stamp_value, encoded))
                 messages.append(message)
-            # Missing times may have reused much older persisted timestamps.
-            # Validate the resolved range before the import transaction commits.
-            if max(m['timestamp'] for m in messages) - min(m['timestamp'] for m in messages) >= group['max_days'] * 86400:
-                raise AgentError('scope_denied', '文件内消息跨度超过单次授权，请拆分文件或确认修改max_days')
         return {'messages': messages, 'counts': counts, 'snapshots': [],
                 'notice': '仅导入用户提供的文件；未连接聊天服务。无原时间时使用首次导入时间，无ID时按内容去重。'}
 
@@ -337,12 +331,12 @@ class ImportSource:
                                                                        (group, scope['since'], scope['until'])))
         return {'messages': rows, 'snapshots': [], 'parse_errors': []}
 
-    def attachment_grants(self, message):
+    def attachment_kinds(self, message):
         result = set()
         for item in message.get('attachments', []):
-            result.add('images_to_agent' if item['kind'] == 'image' else 'documents_to_agent')
+            result.add('image' if item['kind'] == 'image' else 'document')
             if Path(item['path']).suffix == '.zip':
-                result.add('images_to_agent')
+                result.add('image')
         return result
 
     def asset_allowed(self, config, path):

@@ -11,12 +11,13 @@ import sys
 
 from project_core import WIDGET_MUTEX
 OWNER_ID = 'chatnoticetool-owned-v1'
-OWNED = frozenset({".chatnotice-owned.json", "README.md", "config.json", "project_core.py", "cli_support.py", "agent_setup.py", "rules_editor.py",
+OWNED = frozenset({".chatnotice-owned.json", "README.md", "config.json", "project_core.py", "cli_support.py", "agent_setup.py", "rules_editor.py", "group_settings.py",
     "cleanup.py", "run.cmd", "cleanup.cmd", "tests", "research", "state", "exports",
     "runtime", "vendor", "__pycache__", "cipher.py", "memory_reader.py", "database_reader.py", "groups.py", "messages.py", "attachments.py", "document_formats.py", "widget_ui.py", "glass_style.py", "todo_detail.py", "todo_store.py", "todo_widget.py", "todo-widget.cmd", "todo.ico", "local_setup.py", "config.example.json", "requirements.txt",
     "dingtalk_export.py", "dingtalk_probe.py", "agent_cli.py", "agent_config.py", "agent_service.py", "agent_sources.py", "agent_processing.py", "agent_assets.py", "wechat_content.py", "agent_imports.py", "agent_locator.py", "AGENTS.md", "docs", "examples", "skills",
     ".gitignore", ".gitattributes", "SECURITY.md", "CONTRIBUTING.md", "NOTICE.md", "LICENSE", "CHANGELOG.md", "ARCHITECTURE.md", ".github"})
 RUNTIME = frozenset({"state", "exports", "runtime", "__pycache__"})
+SKILL_FILE = Path("skills/chatnotice/SKILL.md")
 
 
 def is_link(path: Path) -> bool:
@@ -30,6 +31,24 @@ def validate_tree(path: Path) -> None:
     if path.is_dir():
         for child in path.iterdir():
             validate_tree(child)
+
+
+def owned_skill_files(root: Path) -> list[Path]:
+    """Only the distributed Markdown is owned, never .local or sibling skills."""
+    current = root
+    for part in SKILL_FILE.parts:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError(f'Refusing linked skill path: {current}')
+        if not current.exists():
+            return []
+        if is_link(current):
+            raise ValueError(f'Refusing redirected skill path: {current}')
+        if current != root / SKILL_FILE and not current.is_dir():
+            raise ValueError(f'Skill parent is not a directory: {current}')
+    if not current.is_file():
+        raise ValueError(f'Skill Markdown is not a regular file: {current}')
+    return [current]
 
 
 def desktop_directory() -> Path:
@@ -97,7 +116,10 @@ def plan_cleanup(root: Path, mode: str) -> list[Path]:
     if os.path.normcase(str(root.resolve())) != os.path.normcase(marker.get("root", "")):
         raise ValueError("Project ownership path does not match")
     names = OWNED if mode == "all" else RUNTIME
-    targets = [p for p in root.iterdir() if p.name in names]
+    # skills is a release directory, not permission to erase user contents.
+    targets = [p for p in root.iterdir() if p.name in names and p.name != 'skills']
+    if mode == 'all':
+        targets += owned_skill_files(root)
     for path in targets:
         validate_tree(path)
     if mode == 'all':
@@ -113,7 +135,10 @@ def perform_cleanup(root: Path, mode: str, apply: bool = False) -> list[Path]:
     require_widget_closed(root)
     for target in targets:
         validate_tree(target)
-        if target.parent != root:
+        if target == root / SKILL_FILE:
+            if target not in owned_skill_files(root):
+                continue
+        elif target.parent != root:
             # Re-check the registered shortcut hash immediately before deletion.
             marker = json.loads((root / '.chatnotice-owned.json').read_text(encoding='utf-8'))
             if target not in owned_shortcuts(root, marker):

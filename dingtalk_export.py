@@ -173,7 +173,7 @@ class DingTalkSource:
     def connect(self, config, pids, authorized):
         raise AgentError('unsupported_operation', '钉钉V3使用明确UID及本地配置，不扫描内存或猜测UID')
 
-    def attachment_grants(self, message):
+    def attachment_kinds(self, message):
         return set() if message.get('type') == 'text' else {'unsupported'}
 
     def asset_allowed(self, config, path):

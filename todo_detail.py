@@ -8,7 +8,7 @@ from datetime import datetime
 import tkinter as tk
 from tkinter import messagebox
 from pathlib import Path
-from glass_style import BG,CARD,INK,MUTED,ACCENT,RED,FONT,IconButton
+from glass_style import BG,CARD,INK,MUTED,ACCENT,RED,FONT,IconButton,set_topmost,bind_topmost
 from todo_store import normalize_due
 
 
@@ -84,7 +84,8 @@ class DetailWindow:
             x=max(0,min(sx,win.winfo_screenwidth()-width)); y=max(0,min(sy,win.winfo_screenheight()-height))
         win.geometry(f'{width}x{height}+{x}+{y}')
         self.pinned=bool(self.store.setting('detail_pinned:'+task['id'],False)) if task else False
-        win.attributes('-topmost',self.pinned)
+        set_topmost(win,self.pinned)
+        bind_topmost(win,lambda: self.pinned)
         icon=Path(__file__).resolve().parent/'todo.ico'
         if icon.exists(): win.iconbitmap(str(icon))
         self.scrollbar=tk.Scrollbar(win,command=self.scroll_page,width=8,bd=0,highlightthickness=0)
@@ -220,7 +221,6 @@ class DetailWindow:
         self.note.configure(padx=8 if value else 16,pady=2 if value else 16,
                             spacing1=1 if value else 3,spacing3=4 if value else 7)
         self.complete_button.pack_configure(padx=(4,0) if value else (14,0))
-        for button in (self.complete_button,self.pin_button): button.set_size(28 if value else 48)
 
     def show_error(self,text):
         self.status.configure(text=text,fg=RED)
@@ -235,7 +235,7 @@ class DetailWindow:
         value=not self.pinned
         try:
             if self.task: self.store.set_setting('detail_pinned:'+self.task['id'],value)
-            self.window.attributes('-topmost',value)
+            set_topmost(self.window,value)
             self.pinned=value; self.pin_button.set_active(value)
         except (ValueError,OSError,sqlite3.Error,tk.TclError) as exc: self.show_error(str(exc))
 

@@ -68,16 +68,14 @@ class AgentService:
             raise AgentError('invalid_input', '开始必须早于结束')
         windows = store.windows(groups, int(time.time()), lower, upper)
         sources = {g['source_id']: self.config.source(g['source_id'], value) for g in groups}
-        groups_by_key = {g['key']: g for g in groups}
         if lower is None:
             # Successful file imports already enqueue every message durably.
             # Daily reads consume that queue, not years of empty client-style
             # history windows. Explicit --since still supports inbox rescan.
             for window in windows:
                 if get_source(sources[window['source_id']]['platform']).capabilities.get('file_import'):
-                    group = groups_by_key[window['group_key']]
                     target = window['target_until']
-                    if upper is None and (group['until'] is None or target < group['until']):
+                    if upper is None:
                         target += 1
                     window.update(since=target, until=target, target_until=target,
                                   more_history=False, queue_only=True)
@@ -165,12 +163,9 @@ class AgentService:
         for message in messages:
             stamp = message['timestamp']
             if (message['platform'] != source['platform'] or message['group_id'] != group['group_id']
-                    or type(stamp) is not int or not group['since'] <= stamp <= now
-                    or (group['until'] is not None and stamp >= group['until'])):
+                    or type(stamp) is not int or not 0 <= stamp <= now):
                 raise AgentError('out_of_scope', '适配器返回了超出所选分组授权范围的消息')
         lower, upper = min(m['timestamp'] for m in messages), max(m['timestamp'] for m in messages) + 1
-        if upper - lower > group['max_days'] * 86400:
-            raise AgentError('scope_denied', '导入跨度超出单次授权，请拆分文件')
         window = {'group_key': group['key'], 'source_id': source['id'], 'group_id': group['group_id'],
                   'since': lower, 'until': upper, 'target_until': upper, 'more_history': False}
         ledger = ProcessingStore(self.root)

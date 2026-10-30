@@ -116,8 +116,7 @@ class DingTalkTests(unittest.TestCase):
         self.source = self.service.config.configure_source({'confirmed': True, 'expected_revision': self.service.config.load()['revision'],
                     'platform': 'dingtalk', 'uid': UID, 'paths': {'account_dir': str(self.account)}})['source']
         self.group = self.service.config.apply_groups({'confirmed': True, 'expected_revision': self.service.config.load()['revision'], 'groups': [{
-            'source_id': self.source['id'], 'group_id': cid, 'since': NOW - 86400, 'recipient': 'synthetic agent',
-            'instructions': '由Agent自行判断', 'grant': {'text_to_agent': True, 'images_to_agent': False, 'documents_to_agent': False}}]})['groups'][0]
+            'source_id': self.source['id'], 'group_id': cid}]})['groups'][0]
 
     def open(self):
         return probe.decrypted_database(self.account, UID, runtime=self.project / 'runtime/dingtalk-snapshots')
@@ -184,9 +183,22 @@ class DingTalkTests(unittest.TestCase):
                       ('tbmsg_001', 'new', 'G1', '窗内', 1, NOW - 100),
                       ('tbmsg_001', 'private', 'P1', '不应交付', 1, NOW - 100)])
         self.configure()
-        page = self.service.read()
+        page = self.service.read(since=NOW - 86400, until=NOW)
         self.assertEqual(page['total'], 1)
         self.assertEqual(page['messages'][0]['message']['text'], '窗内')
+
+    def test_default_recent_window_and_read_only_dingtalk_section(self):
+        from group_settings import group_sections
+        self.fixture([('tbmsg_000', 'old', 'G1', '更早历史', 1, NOW - 8 * 86400),
+                      ('tbmsg_001', 'new', 'G1', '近一周', 1, NOW - 2 * 86400)])
+        self.configure()
+        page = self.service.read()
+        self.assertEqual(page['total'], 1)
+        self.assertEqual(page['read_windows'][0]['since'], NOW - 7 * 86400)
+        sections = group_sections(self.service.config)
+        self.assertEqual(list(sections), ['qq', 'wechat', 'dingtalk'])
+        self.assertEqual(sections['dingtalk'][0]['group_id'], 'G1')
+        self.assertEqual(sections['dingtalk'][0]['last_read_at'], NOW)
 
     def test_identical_cross_shard_duplicates_once_conflicts_fail(self):
         self.fixture([('tbmsg_000', 'same', 'G1', '相同', 1, NOW - 100), ('tbmsg_001', 'same', 'G1', '相同', 1, NOW - 100)])

@@ -19,7 +19,8 @@ class SetupService:
         value = self.config.load()
         return {'root': str(self.root), 'python': str(Path(sys.executable).absolute()),
                 'initialized': private_path(self.root, 'config.json').is_file(),
-                'revision': value['revision'], 'sources': list(value['sources'].values()),
+                'revision': value['revision'], 'schema_version': value['schema_version'],
+                **self.config.migration_status(), 'sources': list(value['sources'].values()),
                 'groups': list(value['groups'].values()),
                 'capabilities': [get_source(p).capabilities for p in SOURCE_FACTORIES],
                 'key_cache_present': private_path(self.root, 'state/secrets.dpapi').is_file(),
@@ -76,6 +77,7 @@ def build_parser():
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('inspect')
     commands.add_parser('init')
+    commands.add_parser('migrate', help='确认迁移旧群配置；保留选群，移除旧范围及媒体权限').add_argument('--input', required=True)
     source = commands.add_parser('source').add_subparsers(dest='action', required=True)
     candidate = source.add_parser('candidates')
     candidate.add_argument('--platform', choices=['qq', 'wechat', 'dingtalk'], required=True)
@@ -107,6 +109,8 @@ def build_parser():
 def dispatch(args, service):
     if args.command in ('inspect', 'init'):
         return getattr(service, args.command)()
+    if args.command == 'migrate':
+        return service.config.migrate(input_payload(args.input))
     if args.command == 'images':
         return service.images(args.batch_id, args.message_keys, pid=args.pid,
                               authorize_memory_read=args.authorize_memory_read, timings=args.timings)

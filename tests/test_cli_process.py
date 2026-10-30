@@ -54,9 +54,7 @@ class CliProcessTests(unittest.TestCase):
         source = config.configure_source({'expected_revision': 0, 'confirmed': True, 'platform': 'import',
                                           'collection': 'synthetic-inbox'})['source']
         self.group = config.apply_groups({'expected_revision': 1, 'confirmed': True, 'groups': [{
-            'source_id': source['id'], 'group_id': 'inbox', 'name': '合成测试收件箱', 'since': 0,
-            'instructions': '合成测试，不读取真实消息', 'recipient': '测试子进程',
-            'grant': {'text_to_agent': True, 'images_to_agent': False, 'documents_to_agent': False}}]})['groups'][0]
+            'source_id': source['id'], 'group_id': 'inbox', 'name': '合成测试收件箱'}]})['groups'][0]
 
     def cli(self, *args, payload=None, expected=0):
         process = subprocess.run([sys.executable, '-B', '-X', 'utf8', '-c', RUNNER, str(self.root), *args],
@@ -91,10 +89,6 @@ class CliProcessTests(unittest.TestCase):
         self.assertFalse((self.root / 'state/agent-inputs').exists())
 
     def test_images_pagination_cache_and_one_write_across_real_processes(self):
-        config = AgentConfig(self.root)
-        self.group = config.apply_groups({'expected_revision': config.load()['revision'], 'confirmed': True,
-                                          'groups': [{**self.group, 'grant': {'text_to_agent': True, 'images_to_agent': True,
-                                                                            'documents_to_agent': False}}]})['groups'][0]
         image, file = self.root / 'synthetic.png', self.root / 'notices.json'
         image.write_bytes(synthetic_png())
         file.write_text(json.dumps({'messages': [{'id': 'image', 'timestamp': 1, 'text': '合成图片通知', 'attachments': ['synthetic.png']},

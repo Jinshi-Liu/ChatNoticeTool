@@ -26,8 +26,8 @@ read --id TODO_ID [--id TODO_ID ...]
 ### 读取与分页
 
 - 默认读取当前已授权群的新消息、变化消息和未完成项，返回精简正文及本页已授权纯图片路径。不会扫描内存或调用模型。
-- `--group` 可重复，使用准确的配置 key，不接受模糊群名。时间范围受已保存授权及 `max_days` 限制。
-- 无游标且未指定 `--since` 时，从最近 `max_days` 窗口开始；`history_available_before/history_notice` 表示更早历史未扫描。显式 `--since` 用于历史回补。
+- `--group` 可重复，使用准确的已选启用群 key，不接受模糊群名；未选群仍拒绝访问。时间范围是单次显式参数，不保存为配置。
+- 无游标且未指定 `--since` 时，从最近7天窗口开始；`history_available_before/history_notice` 表示更早历史未扫描。显式 `--since` 用于历史回补。
 - 后续增量读取使用重叠窗口和身份、内容哈希去重。获取游标仅表示已接收，不表示已理解；重叠窗口也不保证发现任意晚到历史消息。
 - 返回 `message_key/content_hash`、处理阶段、已有 `task_ids` 和配置说明。`context` 是附近已处理消息的只读上下文，不重复提交结果。
 - `next_cursor` 非空时用同一批次续读，不重新解密。`limit` 为1–200，实际页还受内容大小预算限制。
@@ -149,6 +149,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 ```text
 inspect
 init
+migrate --input -
 source candidates --platform qq|wechat|dingtalk [--base ABS_DIR]
 source configure --input -
 source check --source SOURCE_ID
@@ -178,21 +179,20 @@ images --batch B --message K [--message K2] --pid PID --authorize-memory-read [-
 {
   "expected_revision":1,"confirmed":true,
   "groups":[{
-    "source_id":"SOURCE_ID","group_id":"123456789","name":"课程群",
-    "since":"2030-10-01T00:00:00+08:00","until":null,"max_days":7,"enabled":true,
-    "recipient":"当前Agent/服务",
-    "grant":{"text_to_agent":true,"images_to_agent":true,"documents_to_agent":false}
+    "source_id":"SOURCE_ID","group_id":"123456789","name":"课程群","enabled":true
   }]
 }
 ```
 
-可选 `instructions` 保存用户给该群的说明，不生成统一行为模板。`group_key` 使用工具返回值。每次1–100个群，`max_days` 为1–31天；日期结束包含当天，带时间结束为不含该时刻的上界。
+`group_key` 使用工具返回值。每次1–100个群，`enabled` 默认 true。群配置只接受来源、群 ID、名称和启停；全部媒体已允许。单次读取的日期结束包含当天，带时间结束为不含该时刻的上界；历史按7天操作窗口回补，继续 read 推进游标，pending、去重与批次分页保持不变。
 
-修改提供完整群对象及最新 `expected_revision`，保留未改的范围与授权。撤销输入：
+`migrate` 的 stdin 为 `{"expected_revision":当前版本号,"confirmed":true}`，显式将旧 v1 升级到 v2；旧范围、交付、说明与媒体权限字段全部删除。inspect 和群页只读兼容，不自动写文件。迁移后旧批次重新 read，去重和 pending 不清空；内存取钥授权不持久化。
 
 ```json
 {"expected_revision":2,"confirmed":true,"group_keys":["KEY"]}
 ```
+
+修改提供完整群对象及最新 `expected_revision`。撤销输入：
 
 改配置或撤权可使旧批次失效，不删除已写入待办。编辑 `AGENTS.md` 不会修改这些权限。
 

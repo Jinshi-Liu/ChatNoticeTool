@@ -17,6 +17,7 @@ OVERLAP = 24 * 60 * 60
 PAGE_BYTES = 32 * 1024
 INLINE_BYTES = 12000
 MAX_TASK_LINKS = 100
+READ_WINDOW_SECONDS = 7 * 86400  # Operational chunk size, not a stored authorization.
 
 
 def has_media(message):
@@ -40,6 +41,31 @@ def message_key(source, message):
     return digest([source['platform'], source['account_id'], message['group_id'], identity])
 
 
+def last_successful_reads(root, group_keys):
+    """Metadata-only, read-only lookup; opening settings never initializes state.
+
+    Old cursors/batch creation times are not evidence of successful live reads.
+    Leave them unknown until the first read recorded by the new backend.
+    """
+    path = private_path(Path(root).absolute(), 'state/processing.sqlite3')
+    if not path.is_file():
+        return {}
+    db = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=2)
+    try:
+        if db.execute('PRAGMA application_id').fetchone()[0] != APP_ID:
+            raise AgentError('unknown_database', '处理状态不属于本工具')
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='read_success'").fetchone():
+            return {}
+        result = {}
+        for key in group_keys:
+            row = db.execute('SELECT last_read_at FROM read_success WHERE group_key=?', (key,)).fetchone()
+            if row:
+                result[key] = row[0]
+        return result
+    finally:
+        db.close()
+
+
 class ProcessingStore:
     def __init__(self, root=ROOT):
         self.root = Path(root).absolute()
@@ -52,14 +78,14 @@ class ProcessingStore:
             if app not in (0, APP_ID) or (app == 0 and objects):
                 raise AgentError('unknown_database', '该数据库不属于Agent处理状态，拒绝修改')
             version = db.execute('PRAGMA user_version').fetchone()[0]
-            if version > 1:
+            if version > 2:
                 raise AgentError('state_version', '处理状态版本较新，拒绝降级写入')
             expected = {'messages', 'messages_group_time', 'progress', 'batches', 'batch_messages',
-                        'batch_context', 'links', 'preparations', 'assets'}
-            if app == APP_ID and version == 1 and expected <= objects:
+                        'batch_context', 'links', 'preparations', 'assets', 'read_success'}
+            if app == APP_ID and version == 2 and expected <= objects:
                 return  # Verify identity/version/schema without rewriting headers.
             db.execute(f'PRAGMA application_id={APP_ID}')
-            db.execute('PRAGMA user_version=1')
+            db.execute('PRAGMA user_version=2')
             db.executescript('''
                 CREATE TABLE IF NOT EXISTS messages (
                     message_key TEXT PRIMARY KEY, group_key TEXT NOT NULL, timestamp INTEGER NOT NULL,
@@ -68,6 +94,7 @@ class ProcessingStore:
                     analysis_state TEXT NOT NULL DEFAULT 'pending', reason TEXT NOT NULL DEFAULT '');
                 CREATE INDEX IF NOT EXISTS messages_group_time ON messages(group_key,timestamp);
                 CREATE TABLE IF NOT EXISTS progress (group_key TEXT PRIMARY KEY, observed_until INTEGER NOT NULL);
+                CREATE TABLE IF NOT EXISTS read_success (group_key TEXT PRIMARY KEY, last_read_at INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS batches (
                     batch_id TEXT PRIMARY KEY, created INTEGER NOT NULL, rules TEXT NOT NULL,
                     sources TEXT NOT NULL, windows TEXT NOT NULL, historical INTEGER NOT NULL);
@@ -107,25 +134,14 @@ class ProcessingStore:
         with self.connection() as db:
             for group in groups:
                 observed = db.execute('SELECT observed_until FROM progress WHERE group_key=?', (group['key'],)).fetchone()
-                start = max(group['since'], observed[0] - OVERLAP) if observed else group['since']
+                upper = end
+                initial_recent = observed is None and since is None and upper > READ_WINDOW_SECONDS
+                start = (max(0, observed[0] - OVERLAP) if observed else max(0, upper - READ_WINDOW_SECONDS))
                 if since is not None:
-                    if since < group['since']:
-                        raise AgentError('scope_denied', '回补起点早于已授权历史起点')
+                    if since < 0:
+                        raise AgentError('invalid_input', '读取起点不能早于Unix纪元')
                     start = since
-                upper = min(end, group['until']) if group['until'] is not None else end
-                if until is not None and group['until'] is not None and until > group['until']:
-                    raise AgentError('scope_denied', '结束时刻超出授权范围')
-                initial_recent = observed is None and since is None and start < upper - group['max_days'] * 86400
-                if initial_recent:
-                    # An authorization floor is not a request to scan decades.
-                    # Explicit --since retains oldest-first historical backfill.
-                    start = upper - group['max_days'] * 86400
-                # When catching up a long gap, do not spend the entire allowed
-                # window rereading overlap: reserve room for forward progress.
-                if observed and since is None:
-                    overlap = min(OVERLAP, group['max_days'] * 86400 // 2)
-                    start = max(group['since'], observed[0] - overlap)
-                stop = min(upper, start + group['max_days'] * 86400)
+                stop = min(upper, start + READ_WINDOW_SECONDS)
                 result.append({'group_key': group['key'], 'source_id': group['source_id'],
                                'group_id': group['group_id'], 'since': start, 'until': stop,
                                'target_until': upper, 'more_history': stop < upper,
@@ -167,12 +183,22 @@ class ProcessingStore:
                     if window['until'] <= window['since']:
                         continue
                     previous = db.execute('SELECT observed_until FROM progress WHERE group_key=?', (window['group_key'],)).fetchone()
-                    covered = previous[0] if previous else rules[window['group_key']]['since']
+                    covered = previous[0] if previous else window['since']
                     # Explicit backfill must not jump an unacquired gap.
                     if (window['since'] <= covered < window['until'] or
                             (previous is None and 'history_available_before' in window)):
                         db.execute('INSERT INTO progress VALUES(?,?) ON CONFLICT(group_key) DO UPDATE SET observed_until=excluded.observed_until',
                                    (window['group_key'], window['until']))
+            if not historical:
+                # Successful acquisition wall-clock time, independent of the
+                # requested history bound, analysis, pagination or attachment work.
+                succeeded = int(time.time())
+                # Only actual per-group read windows are stamped. Never stamp
+                # every configured group merely because its account was read.
+                for window in windows:
+                    if window['source_id'] in reports and window['since'] < window['until']:
+                        db.execute('INSERT INTO read_success VALUES(?,?) ON CONFLICT(group_key) DO UPDATE SET last_read_at=excluded.last_read_at',
+                                   (window['group_key'], succeeded))
             db.execute('INSERT INTO batches VALUES(?,?,?,?,?,?)',
                        (batch_id, int(time.time()), encode(rules), encode(sources), encode(windows), int(historical)))
             ordinal = 0
@@ -181,7 +207,7 @@ class ProcessingStore:
                 upper = windows_by_key[group['key']]['target_until']
                 rows = db.execute('''SELECT * FROM messages WHERE group_key=? AND timestamp>=? AND timestamp<?
                                      AND (processed_hash IS NULL OR processed_hash!=content_hash)
-                                     ORDER BY timestamp,message_key''', (group['key'], group['since'], upper))
+                                     ORDER BY timestamp,message_key''', (group['key'], 0, upper))
                 for row in rows:
                     db.execute('INSERT INTO batch_messages(batch_id,ordinal,message_key,content_hash,payload) VALUES(?,?,?,?,?)',
                                (batch_id, ordinal, row['message_key'], row['content_hash'], row['payload']))
@@ -236,9 +262,9 @@ class ProcessingStore:
         identity = info['reference']['server_id']
         if identity and identity != '0':
             key = message_key(source, {'server_id': identity, 'group_id': message['group_id']})
-            upper = min(message['timestamp'], (rule['until'] - 1) if rule['until'] is not None else message['timestamp'])
+            upper = message['timestamp']
             parent = db.execute('SELECT payload FROM messages WHERE message_key=? AND group_key=? AND timestamp>=? AND timestamp<=?',
-                                (key, record['group_key'], rule['since'], upper)).fetchone()
+                                (key, record['group_key'], 0, upper)).fetchone()
             if parent:
                 image = json.loads(parent['payload'])
                 if image.get('type') == 'image':
@@ -303,10 +329,9 @@ class ProcessingStore:
             for group_key in page_rules:
                 first = next(item for item in items if item['group_key'] == group_key)
                 stamp = first.get('timestamp', first.get('message', {}).get('timestamp'))
-                rule = batch['rules'][group_key]
                 neighbors = db.execute('''SELECT * FROM messages WHERE group_key=? AND timestamp>=? AND timestamp<=?
                                           AND processed_hash=content_hash ORDER BY timestamp DESC,message_key LIMIT 2''',
-                                       (group_key, max(rule['since'], stamp - OVERLAP), stamp))
+                                       (group_key, max(0, stamp - OVERLAP), stamp))
                 for neighbor in neighbors:
                     if neighbor['message_key'] in page_keys:
                         continue
@@ -332,7 +357,7 @@ class ProcessingStore:
                       'all_attachment_contents_processed': False,
                       'next_actions': ['write --input -'] if items else []}
             if any('history_available_before' in w for w in batch['windows']):
-                result['history_notice'] = '首次默认读取最近一个max_days窗口；较早授权历史尚未扫描，可用显式--since回补，不代表不存在旧消息'
+                result['history_notice'] = '首次默认读取最近7天；更早历史尚未扫描，可用显式--since/--until回补，不代表不存在旧消息'
             if batch['historical']:
                 result['cache_notice'] = '历史快照，不是最新同步；本批次未推进客户端获取游标'
             return result
@@ -432,12 +457,14 @@ class ProcessingStore:
         result = []
         with self.connection() as db:
             for group in groups:
-                upper = group['until'] if group['until'] is not None else int(time.time())
+                upper = int(time.time()) + 1
                 row = db.execute('''SELECT COUNT(*) AS total,MIN(timestamp) AS oldest FROM messages WHERE group_key=?
                                     AND timestamp>=? AND timestamp<? AND (processed_hash IS NULL OR processed_hash!=content_hash)''',
-                                 (group['key'], group['since'], upper)).fetchone()
+                                 (group['key'], 0, upper)).fetchone()
                 observed = db.execute('SELECT observed_until FROM progress WHERE group_key=?', (group['key'],)).fetchone()
                 result.append({'group_key': group['key'], 'pending_count': row['total'],
                                'oldest_pending_timestamp': row['oldest'],
-                               'acquired_until': observed[0] if observed else None})
+                               'acquired_until': observed[0] if observed else None,
+                               'last_read_at': (db.execute('SELECT last_read_at FROM read_success WHERE group_key=?',
+                                                          (group['key'],)).fetchone() or [None])[0]})
         return {'groups': result, 'notice': 'acquired_until只是已持久接收，不代表已分析完成；用read获取待处理内容'}

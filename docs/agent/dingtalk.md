@@ -21,7 +21,7 @@
 
 上面UID、目录均为虚构占位，必须由用户明确提供。UID不是显示昵称或组织ID；工具不跨账号日志猜UID，不扫描内存，不安装其他解密器。source candidates --platform dingtalk可有界列目录元数据，自定义位置用--base明确指定；不读取重定向配置或全盘搜索。
 
-然后用 `agent_setup.py groups list` 取得群 ID，`groups apply` 保存授权；需要预览时再用 `groups plan`，详见[配置指南](configuration.md)。单聊、不存在的会话、超出配置范围的请求均拒绝，组名不能替代准确群ID。日常仍是：
+然后用 `agent_setup.py groups list` 取得群 ID，`groups apply` 保存授权；需要预览时再用 `groups plan`，详见[配置指南](configuration.md)。单聊、不存在的会话、未选或已停用群的请求均拒绝，组名不能替代准确群ID。群配置不保存时间范围或媒体权限；默认首读最近7天，历史范围用单次 --since/--until 指定。全部媒体授权不等于适配器支持解析所有媒体，以下能力限制仍保留。日常仍是：
 
 ```text
 read → 当前Agent理解 → write --input -

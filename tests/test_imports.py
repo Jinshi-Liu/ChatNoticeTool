@@ -48,14 +48,12 @@ class ImportTests(unittest.TestCase):
             p.stop()
         self.temp.cleanup()
 
-    def configure(self, platform='import', collection='inbox', group_id='inbox', grant=None, since=NOW - 10 * 86400):
+    def configure(self, platform='import', collection='inbox', group_id='inbox'):
         config = self.service.config
         source = config.configure_source({'confirmed': True, 'expected_revision': config.load()['revision'],
                                           'platform': platform, 'collection': collection})['source']
         group = config.apply_groups({'confirmed': True, 'expected_revision': config.load()['revision'], 'groups': [{
-            'source_id': source['id'], 'group_id': group_id, 'since': since, 'max_days': 7,
-            'recipient': 'synthetic current agent', 'instructions': '自行整理，说明写进正文即可',
-            'grant': grant or {'text_to_agent': True, 'images_to_agent': True, 'documents_to_agent': True}}]})['groups'][0]
+            'source_id': source['id'], 'group_id': group_id}]})['groups'][0]
         return source, group
 
     def json_file(self, rows, name='messages.json'):
@@ -134,6 +132,17 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(updated['messages'][0]['message_key'], first['messages'][0]['message_key'])
         self.assertEqual(self.service.read()['total'], 1)
 
+    def test_import_success_updates_read_time_but_queue_and_failed_import_do_not(self):
+        from agent_processing import last_successful_reads
+        self.assertEqual(last_successful_reads(self.root, [self.group['key']]), {})
+        self.importing(self.json_file([{'text': '合成通知', 'timestamp': NOW - 100}]))
+        self.assertEqual(last_successful_reads(self.root, [self.group['key']]), {self.group['key']: NOW})
+        with patch('time.time', return_value=NOW + 100):
+            self.service.read()
+            with self.assertRaises(AgentError):
+                self.importing(self.incoming / 'not-present.txt')
+        self.assertEqual(last_successful_reads(self.root, [self.group['key']]), {self.group['key']: NOW})
+
     def test_import_does_not_advance_unscanned_history(self):
         page = self.importing(self.json_file([{'text': '合成通知', 'timestamp': NOW - 100}]))
         self.assertEqual(page['total'], 1)
@@ -166,36 +175,34 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(result['counts']['unchanged'], 1)
         self.assertEqual(result['total'], 1)
 
-    def test_reused_first_import_time_must_still_be_authorized(self):
-        file = self.json_file([{'id': 'stable', 'text': '时间权限'}])
+    def test_reused_first_import_time_survives_group_name_change(self):
+        file = self.json_file([{'id': 'stable', 'text': '时间记录'}])
         self.importing(file)
-        group = dict(self.group, since=NOW + 50)
+        group = dict(self.group, name='新群名')
         self.service.config.apply_groups({'confirmed': True, 'expected_revision': self.service.config.load()['revision'], 'groups': [group]})
         with patch('time.time', return_value=NOW + 100):
-            with self.assertRaises(AgentError) as cm:
-                self.importing(file)
-        self.assertEqual(cm.exception.code, 'scope_denied')
+            repeated = self.importing(file)
+        self.assertEqual(repeated['messages'][0]['message']['timestamp'], NOW)
 
-    def test_missing_time_retry_uses_saved_time_with_past_grant_end(self):
+
+    def test_missing_time_retry_uses_saved_historical_time(self):
         file = self.json_file([{'id': 'known', 'timestamp': NOW - 3 * 86400, 'text': '已知历史时间'}])
         first = self.importing(file)
         self.commit(first)
         self.json_file([{'id': 'known', 'text': '已知历史时间'}])
-        group = dict(self.group, until=NOW - 2 * 86400)
-        self.service.config.apply_groups({'confirmed': True, 'expected_revision': self.service.config.load()['revision'], 'groups': [group]})
         repeated = self.importing(file)
         self.assertEqual(repeated['counts']['unchanged'], 1)
         self.assertEqual(repeated['total'], 0)
 
-    def test_resolved_time_span_is_checked_before_import_commit(self):
-        file = self.json_file([{'id': 'old', 'timestamp': NOW - 9 * 86400, 'text': '旧日期'}])
+    def test_resolved_time_span_has_no_stored_authorization_limit(self):
+        file = self.json_file([{'id': 'old', 'timestamp': NOW - 90 * 86400, 'text': '旧日期'}])
         self.importing(file)
         self.json_file([{'id': 'old', 'text': '旧日期'}, {'id': 'new', 'text': '新日期'}])
-        with self.assertRaises(AgentError) as cm:
-            self.importing(file)
-        self.assertEqual(cm.exception.code, 'scope_denied')
+        result = self.importing(file)
+        self.assertEqual(result['total'], 2)
         with ImportStore(self.service.config.client_config(self.source)).connection() as db:
-            self.assertEqual(db.execute('SELECT COUNT(*) FROM records').fetchone()[0], 1)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM records').fetchone()[0], 2)
+
 
     def test_saved_missing_time_does_not_falsely_widen_import_range(self):
         file = self.json_file([{'id': 'old', 'timestamp': NOW - 9 * 86400, 'text': '旧日期'}])
@@ -252,27 +259,24 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(page['messages'][0]['message']['attachments'][0]['kind'], 'image')
         self.assertEqual(prepare(ProcessingStore(self.root), self.asset_args(page))['results'][0]['status'], 'prepared')
 
-    def test_document_import_and_attachment_permission(self):
+    def test_document_and_image_import_need_no_separate_permission(self):
         pdf = self.incoming / 'notice.pdf'
-        pdf.write_bytes(b'%PDF-1.4\nSynthetic unparsed fixture\n')
+        pdf.write_bytes(b'%PDF-1.4\\nSynthetic unparsed fixture\\n')
         page = self.importing(pdf)
         self.assertEqual(page['messages'][0]['message']['attachments'][0]['kind'], 'document')
         self.assertEqual(prepare(ProcessingStore(self.root), self.asset_args(page))['results'][0]['status'], 'prepared')
-        self.source, self.group = self.configure(collection='no-images', grant={
-            'text_to_agent': True, 'images_to_agent': False, 'documents_to_agent': True})
         image = self.incoming / 'picture.png'
         image.write_bytes(PNG)
-        with self.assertRaises(AgentError) as cm:
-            self.importing(image)
-        self.assertEqual(cm.exception.code, 'scope_denied')
+        page = self.importing(image)
+        self.assertTrue(any(m['message']['attachments'][0]['kind'] == 'image' for m in page['messages']))
 
-    def test_image_signature_not_extension_controls_grant(self):
+
+    def test_image_signature_not_extension_controls_media_kind(self):
         disguised = self.incoming / 'not-a-document.txt'
         disguised.write_bytes(PNG)
-        self.source, self.group = self.configure(collection='no-images', grant={
-            'text_to_agent': True, 'images_to_agent': False, 'documents_to_agent': True})
-        with self.assertRaises(AgentError):
-            self.importing(self.json_file([{'attachments': ['not-a-document.txt']}]))
+        page = self.importing(self.json_file([{'attachments': ['not-a-document.txt']}]))
+        self.assertEqual(page['messages'][0]['message']['attachments'][0]['kind'], 'image')
+
 
     def test_missing_attachment_rejected_not_silently_dropped(self):
         with self.assertRaises(AgentError) as cm:
@@ -306,12 +310,14 @@ class ImportTests(unittest.TestCase):
         with self.assertRaises(AgentError):
             self.importing(self.json_file([{'execute': 'not-a-command'}]))
 
-    def test_future_outside_grant_and_oversized_time_span_rejected(self):
-        for rows in ([{'timestamp': NOW + 1, 'text': 'future'}],
-                     [{'timestamp': NOW - 11 * 86400, 'text': 'too old'}],
-                     [{'timestamp': NOW - 8 * 86400, 'text': 'a'}, {'timestamp': NOW - 1, 'text': 'b'}]):
+    def test_future_and_negative_times_rejected_but_old_wide_history_allowed(self):
+        for timestamp in (NOW + 1, -1):
             with self.assertRaises(AgentError):
-                self.importing(self.json_file(rows))
+                self.importing(self.json_file([{'timestamp': timestamp, 'text': 'invalid time'}]))
+        page = self.importing(self.json_file([{'id': 'old', 'timestamp': 0, 'text': 'old'},
+                                             {'id': 'recent', 'timestamp': NOW - 1, 'text': 'recent'}]))
+        self.assertEqual(page['total'], 2)
+
 
     def test_invalid_or_duplicate_ids_fail_without_partial_rows(self):
         file = self.json_file([{'id': 'same', 'text': 'a'}, {'id': 'same', 'text': 'b'}])

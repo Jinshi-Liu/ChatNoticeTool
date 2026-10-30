@@ -16,15 +16,15 @@ DOCUMENTS = {'.pdf', '.doc', '.docx', '.xlsx', '.txt', '.md', '.csv', '.html', '
 SUCCESS = {'image_decoded', 'copied_and_hash_verified', 'copied_local_file', 'thumbnail_available'}
 
 
-def required_grants(message):
+def media_kinds(message):
     if message['platform'] == 'wechat':
         info = describe(message)
         if info and not info['media']:
             return set()
         if info and info.get('media_kind') == 'image':
-            return {'images_to_agent'}
+            return {'image'}
         if message.get('type') == 'image':
-            return {'images_to_agent'}
+            return {'image'}
         if message.get('type') == 'file_link_or_card':
             import xml.etree.ElementTree as ET
             value = message.get('text', '')
@@ -38,26 +38,26 @@ def required_grants(message):
             except ET.ParseError:
                 suffix = ''
             if suffix in IMAGES:
-                return {'images_to_agent'}
+                return {'image'}
             if suffix in DOCUMENTS and suffix != '.zip':
-                return {'documents_to_agent'}
-            return {'documents_to_agent', 'images_to_agent'}
+                return {'document'}
+            return {'document', 'image'}
         return set() if not has_media(message) else {'unsupported'}
-    grants = set()
+    kinds = set()
     for item in message.get('attachments', []):
         suffix = Path(item.get('filename') or item.get('filepath') or '').suffix.lower()
         extension = str(item.get('file_ext', '')).lower().lstrip('.')
         suffix = suffix or ('.' + extension if extension else '')
         if suffix in IMAGES or (not suffix and (item.get('width') or item.get('height'))):
-            grants.add('images_to_agent')
+            kinds.add('image')
         elif suffix in DOCUMENTS:
-            grants.add('documents_to_agent')
+            kinds.add('document')
             if suffix == '.zip':
-                grants.add('images_to_agent')
+                kinds.add('image')
         else:
-            # Unknown bytes could be an image or a document; require both grants.
-            grants.update(('images_to_agent', 'documents_to_agent'))
-    return grants
+            # Unknown bytes could be an image or a document; classify as both.
+            kinds.update(('image', 'document'))
+    return kinds
 
 
 def file_stamp(path):
@@ -121,17 +121,13 @@ def prepare(store, payload, *, pid=0, authorize_memory_read=False, timings=False
         backend = get_source(source['platform'])
         if authorize_memory_read and not backend.capabilities.get('memory_read'):
             raise AgentError('unsupported_operation', '该来源不支持也不需要进程内存读取')
-        needed = backend.attachment_grants(record['message'])
+        needed = backend.attachment_kinds(record['message'])
         if 'unsupported' in needed or not has_media(record['message']):
             results.append({'message_key': record['message_key'], 'status': 'unsupported_or_no_attachment', 'items': []})
             continue
-        if images_only and needed != {'images_to_agent'}:
+        if images_only and needed != {'image'}:
             results.append({'message_key': record['message_key'], 'status': 'not_requested', 'items': [],
                             'notice': '只自动准备纯图片；文档或混合附件请显式read --batch <B> --message <K> --attachments'})
-            continue
-        if any(not rule['grant'][grant] for grant in needed):
-            results.append({'message_key': record['message_key'], 'status': 'scope_denied', 'items': [],
-                            'notice': '该消息附件所需的图片/文档交付权限尚未授权'})
             continue
         config = store.config.client_config(source)
         cache_key = record['cache_key']

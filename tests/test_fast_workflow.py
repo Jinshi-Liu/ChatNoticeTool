@@ -112,14 +112,14 @@ class FastWorkflowTests(AgentFixture):
             self.service.todo_store()
         self.assertFalse(any('CREATE ' in sql or ('PRAGMA ' in sql and '=' in sql) for sql in statements), statements)
 
-    def test_missing_processing_table_is_initialized_without_version_change(self):
+    def test_missing_processing_table_is_initialized_with_current_schema_version(self):
         store = ProcessingStore(self.root)
         with store.connection() as db:
             db.execute('DROP TABLE assets')
         repaired = ProcessingStore(self.root)
         with repaired.connection() as db:
             self.assertIsNotNone(db.execute("SELECT name FROM sqlite_master WHERE name='assets'").fetchone())
-            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 1)
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 2)
 
     def test_write_reuses_validated_store_instances(self):
         from todo_store import TodoStore
@@ -176,15 +176,13 @@ class FastWorkflowTests(AgentFixture):
         prepare.assert_called_once()
         self.assertTrue(second['attachments'][0]['cached'])
 
-    def test_default_read_no_grant_does_not_open_image(self):
+    def test_default_read_selected_group_opens_image_without_media_switch(self):
         self.setup_image()
-        self.add_group('123', grant={'text_to_agent': True, 'images_to_agent': False, 'documents_to_agent': False})
-        with patch('attachments.collect') as prepare:
+        with patch('attachments.collect', side_effect=self.fake_collect) as prepare:
             page = self.service.read()
-        prepare.assert_not_called()
-        self.assertEqual(page['attachments'][0]['status'], 'scope_denied')
-        with self.assertRaises(AgentError):
-            self.service.write(self.payload(page))
+        prepare.assert_called_once()
+        self.assertEqual(page['attachments'][0]['status'], 'prepared')
+        self.service.write(self.payload(page))
 
     def test_no_prepare_flag_skips_page_images(self):
         self.setup_image()
@@ -451,8 +449,7 @@ class WeChatViewsTests(AgentFixture):
 
 
 class FirstReadWindowTests(AgentFixture):
-    def test_all_history_grant_does_not_scan_empty_decades_first(self):
-        self.add_group('123', since=0)
+    def test_first_read_is_recent_without_stored_time_configuration(self):
         self.data = [self.message()]
         page = self.service.read()
         window = page['read_windows'][0]
@@ -462,13 +459,11 @@ class FirstReadWindowTests(AgentFixture):
         self.assertFalse(page['more_history'])
         self.assertEqual(page['total'], 1)
         self.assertIn('history_notice', page)
-        self.assertEqual(self.config.load()['groups'][self.group['key']]['since'], 0)
+        self.assertNotIn('since', self.config.load()['groups'][self.group['key']])
         self.service.read()
-        scopes = self.read_mock.call_args.args[1]['scopes']
-        self.assertEqual(scopes[0]['since'], NOW - 86400)
+        self.assertEqual(self.read_mock.call_args.args[1]['scopes'][0]['since'], NOW - 86400)
 
     def test_explicit_early_history_is_still_read_and_paginated(self):
-        self.add_group('123', since=0)
         page = self.service.read(since=0)
         window = page['read_windows'][0]
         self.assertEqual(window['since'], 0)
@@ -477,18 +472,16 @@ class FirstReadWindowTests(AgentFixture):
         self.assertNotIn('history_available_before', window)
         self.assertNotIn('history_notice', page)
 
-    def test_initial_recent_window_stays_inside_closed_grant(self):
+    def test_explicit_historical_end_is_respected(self):
         upper = NOW - 30 * 86400
-        self.add_group('123', since=0, until=upper)
         self.data = [self.message(timestamp=upper - 100), self.message(2)]
-        page = self.service.read()
+        page = self.service.read(until=upper)
         self.assertEqual(page['read_windows'][0]['since'], upper - 7 * 86400)
         self.assertEqual(page['read_windows'][0]['until'], upper)
         self.assertEqual(page['total'], 1)
 
     def test_recent_window_does_not_skip_existing_catchup_cursor(self):
         lower = NOW - 30 * 86400
-        self.add_group('123', since=lower)
         self.service.read(since=lower, until=lower + 86400)
         page = self.service.read()
         self.assertEqual(page['read_windows'][0]['since'], lower)

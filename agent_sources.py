@@ -43,9 +43,9 @@ class LocalSource:
         return {self.platform: dict(source['paths']), 'attachments': {'extra_allowed_roots': []},
                 'policy': {'allow_process_memory_read': False}}
 
-    def attachment_grants(self, message):
-        from agent_assets import required_grants
-        return required_grants(message)
+    def attachment_kinds(self, message):
+        from agent_assets import media_kinds
+        return media_kinds(message)
 
     def asset_allowed(self, config, path):
         from attachments import allowed_local_source
