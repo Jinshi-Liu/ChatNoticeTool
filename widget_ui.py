@@ -15,11 +15,12 @@ def rounded_points(x1,y1,x2,y2,r=16):
 
 
 class SegmentedControl(tk.Canvas):
-    def __init__(self,parent,command):
+    def __init__(self,parent,command,*,labels=('待办','完成'),show_counts=True):
+        self.show_counts=show_counts
         super().__init__(parent,width=246,height=65,bg=BG,bd=0,highlightthickness=0,takefocus=True)
         self.command=command; self.state=None; self.compact=False
-        self.left=self.create_text(4,28,anchor='w',text='待办',font=(FONT,-32,'bold'),fill=INK)
-        self.right=self.create_text(127,28,anchor='w',text='完成',font=(FONT,-32,'bold'),fill=MUTED)
+        self.left=self.create_text(4,28,anchor='w',text=labels[0],font=(FONT,-32,'bold'),fill=INK)
+        self.right=self.create_text(127,28,anchor='w',text=labels[1],font=(FONT,-32,'bold'),fill=MUTED)
         self.left_count=self.create_text(91,13,anchor='w',font=(FONT,-16,'bold'),fill=ACCENT)
         self.right_count=self.create_text(214,13,anchor='w',font=(FONT,-16,'bold'),fill=MUTED)
         self.pill=self.create_line(6,58,58,58,fill=ACCENT,width=3,capstyle='round')
@@ -57,8 +58,8 @@ class SegmentedControl(tk.Canvas):
         self.state=state
         self.itemconfigure(self.left,fill=MUTED if selected else INK)
         self.itemconfigure(self.right,fill=INK if selected else MUTED)
-        self.itemconfigure(self.left_count,text=str(pending),fill=MUTED if selected else ACCENT)
-        self.itemconfigure(self.right_count,text=str(done),fill=ACCENT if selected else MUTED)
+        self.itemconfigure(self.left_count,text=str(pending) if self.show_counts else '',fill=MUTED if selected else ACCENT)
+        self.itemconfigure(self.right_count,text=str(done) if self.show_counts else '',fill=ACCENT if selected else MUTED)
         self.layout_tabs()
 
 

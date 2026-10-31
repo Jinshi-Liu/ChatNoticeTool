@@ -88,6 +88,29 @@ class ManagementWindowTests(SettingsFixture, unittest.TestCase):
         self.editor.close(force=True)
         self.root.destroy()
 
+    def test_management_sizes_match_main_window(self):
+        from tkinter import ttk
+        from glass_style import IconButton
+        from widget_ui import SegmentedControl
+        tabs = SegmentedControl(self.root, lambda done: None)
+        icon = IconButton(self.root, 'plus', lambda: None)
+        try:
+            expected = self.root.tk.splitlist(tabs.itemcget(tabs.left, 'font'))
+            for item in (self.editor.segment.left, self.editor.segment.right):
+                self.assertEqual(self.root.tk.splitlist(self.editor.segment.itemcget(item, 'font')), expected)
+            self.assertEqual(self.editor.segment.coords(self.editor.segment.left), tabs.coords(tabs.left))
+            self.assertEqual(self.editor.segment.coords(self.editor.segment.pill), tabs.coords(tabs.pill))
+            self.assertEqual(self.editor.segment.cget('height'), tabs.cget('height'))
+            self.assertEqual(self.editor.save_button.size, icon.size)
+            self.assertEqual(int(self.root.tk.splitlist(self.editor.text.cget('font'))[1]), -30)
+            page = self.open_groups()
+            style = ttk.Style(page)
+            self.assertEqual(int(self.root.tk.splitlist(style.lookup(page.style_name, 'font'))[1]), -30)
+            self.assertGreaterEqual(int(style.lookup(page.style_name, 'rowheight')), 48)
+        finally:
+            tabs.destroy()
+            icon.destroy()
+
     def open_groups(self):
         self.editor.switch_tab('groups')
         self.root.update()
@@ -124,7 +147,7 @@ class ManagementWindowTests(SettingsFixture, unittest.TestCase):
         self.assertFalse((self.project / 'state/processing.sqlite3').exists())
 
     def test_tabs_keep_large_rule_draft_and_group_ctrl_s_cannot_write(self):
-        self.assertIn('-23', self.editor.text.cget('font'))
+        self.assertIn('-30', self.editor.text.cget('font'))
         self.editor.text.insert('1.0', '用户自己的规则')
         before = self.config.path.read_bytes()
         page = self.open_groups()

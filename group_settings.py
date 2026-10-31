@@ -61,9 +61,9 @@ class GroupSettings(tk.Frame):
         self.viewport.rowconfigure(0, weight=1)
         self.style_name = f'GroupOverview{id(self)}.Treeview'
         style = ttk.Style(self)
-        style.configure(self.style_name, font=(FONT, -17), rowheight=36, background=CARD,
+        style.configure(self.style_name, font=(FONT, -30), rowheight=52, background=CARD,
                         fieldbackground=CARD, foreground=INK, borderwidth=0)
-        style.configure(self.style_name + '.Heading', font=(FONT, -15), foreground=MUTED, padding=(6, 8))
+        style.configure(self.style_name + '.Heading', font=(FONT, -24), foreground=MUTED, padding=(6, 8))
         self.table = ttk.Treeview(self.viewport, columns=COLUMNS, show='headings', height=8,
                                   style=self.style_name, selectmode='browse')
         for key, label in zip(COLUMNS, ('平台', '群名', '群号 / 群 ID', '最后读取')):
@@ -74,8 +74,8 @@ class GroupSettings(tk.Frame):
         self.vertical.grid(row=0, column=1, sticky='ns')
         self.horizontal = ttk.Scrollbar(self.viewport, orient='horizontal', command=self.table.xview)
         self.table.configure(yscrollcommand=self.vertical.set, xscrollcommand=self._xscroll)
-        self.empty = tk.Label(self.table, text='暂无已配置群聊', font=(FONT, -17), fg=MUTED, bg=CARD)
-        self.footer = tk.Label(self, text=FOOTER, font=(FONT, -17), bg=BG, fg=MUTED, anchor='w')
+        self.empty = tk.Label(self.table, text='暂无已配置群聊', font=(FONT, -30), fg=MUTED, bg=CARD)
+        self.footer = tk.Label(self, text=FOOTER, font=(FONT, -24), wraplength=800, bg=BG, fg=MUTED, anchor='w')
         self.footer.grid(row=1, column=0, sticky='ew', pady=(14, 0))
         # A private, leading bindtag handles the event exactly once, before the
         # Treeview/Scrollbar class defaults. Never bind_all or bind a toplevel.
@@ -157,15 +157,16 @@ class GroupSettings(tk.Frame):
             self._schedule_poll()
 
     def _resize(self, event):
+        self.footer.configure(wraplength=max(80, event.width - 12))
         available = max(1, event.width - 4)
         if available == self._layout_width:
             return
         self._layout_width = available
         # A regular window fits all columns without a horizontal scrollbar.
         # Compact windows retain usable minimums; full IDs are also hoverable.
-        flexible = max(300, available - 192)
+        flexible = max(360, available - 300)
         name = int(flexible * .46)
-        for key, width in zip(COLUMNS, (76, name, flexible - name, 116)):
+        for key, width in zip(COLUMNS, (100, name, flexible - name, 200)):
             self.table.column(key, width=width)
 
     def _xscroll(self, first, last):
@@ -207,7 +208,7 @@ class GroupSettings(tk.Frame):
         tip = self._tooltip = tk.Toplevel(self)
         tip.withdraw()
         tip.overrideredirect(True)
-        tk.Label(tip, text=value, font=(FONT, -15), bg=CARD, fg=INK, justify='left',
+        tk.Label(tip, text=value, font=(FONT, -24), bg=CARD, fg=INK, justify='left',
                  wraplength=520, padx=10, pady=7, relief='solid', borderwidth=1).pack()
         tip.update_idletasks()
         x = max(0, min(x + 12, tip.winfo_screenwidth() - tip.winfo_reqwidth() - 8))

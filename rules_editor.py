@@ -4,6 +4,7 @@ import tkinter as tk
 from tkinter import messagebox
 
 from glass_style import BG, CARD, INK, MUTED, ACCENT, RED, FONT, IconButton
+from widget_ui import SegmentedControl
 
 
 class RulesEditor:
@@ -35,28 +36,23 @@ class RulesEditor:
             except tk.TclError:
                 pass
         toolbar = tk.Frame(win, bg=BG)
-        toolbar.pack(fill='x', padx=22, pady=(14, 0))
-        self.tab_buttons, self.tab_lines = {}, {}
-        for tab, label in (('rules', '规则'), ('groups', '群聊')):
-            slot = tk.Frame(toolbar, bg=BG)
-            slot.pack(side='left', padx=(0, 26))
-            button = tk.Button(slot, text=label, command=lambda key=tab: self.switch_tab(key),
-                               font=(FONT, -23, 'bold'), fg=INK, bg=BG, activebackground=BG,
-                               activeforeground=INK, bd=0, padx=2, pady=5, cursor='hand2')
-            button.pack()
-            line = tk.Frame(slot, bg=BG, height=3)
-            line.pack(fill='x', padx=2, pady=(2, 0))
-            self.tab_buttons[tab], self.tab_lines[tab] = button, line
-        self.save_button = IconButton(toolbar, 'save', self.save, size=40)
-        self.save_button.pack(side='right', pady=(0, 7))
+        self.header = toolbar
+        toolbar.pack(fill='x', padx=24, pady=(18, 4))
+        toolbar.columnconfigure(0, weight=1)
+        self.segment = SegmentedControl(toolbar,
+            lambda groups: self.switch_tab('groups' if groups else 'rules'),
+            labels=('规则', '群聊'), show_counts=False)
+        self.segment.grid(row=0, column=0, sticky='ew')
+        self.save_button = IconButton(toolbar, 'save', self.save)
+        self.save_button.grid(row=0, column=1, sticky='ne', padx=(8, 0), pady=(3, 0))
         self.status = tk.Label(win, text='', bg=BG, fg=RED, font=(FONT, -14),
                                anchor='w', justify='left', wraplength=800)
         self.content = tk.Frame(win, bg=BG)
-        self.content.pack(fill='both', expand=True, padx=22, pady=(18, 22))
+        self.content.pack(fill='both', expand=True, padx=(18, 10), pady=(0, 22))
         self.rules_page = tk.Frame(self.content, bg=CARD)
         self.rules_page.pack(fill='both', expand=True)
         self.text = tk.Text(self.rules_page, wrap='word', undo=True, autoseparators=True,
-                            font=(FONT, -23), bg=CARD, fg=INK, insertbackground=ACCENT,
+                            font=(FONT, -30), bg=CARD, fg=INK, insertbackground=ACCENT,
                             bd=0, highlightthickness=0, padx=18, pady=18, spacing3=5)
         self.scrollbar = tk.Scrollbar(self.rules_page, command=self.text.yview, width=8, bd=0)
         self.scrollbar.pack(side='right', fill='y')
@@ -105,10 +101,7 @@ class RulesEditor:
         self.save_button.set_active(self.rules_dirty if self.active_tab == 'rules' else False)
 
     def update_tabs(self):
-        for tab, button in self.tab_buttons.items():
-            selected = tab == self.active_tab
-            button.configure(fg=INK if selected else MUTED)
-            self.tab_lines[tab].configure(bg=ACCENT if selected else BG)
+        self.segment.update_state(0, 0, self.active_tab == 'groups')
 
     def switch_tab(self, tab):
         if tab not in ('rules', 'groups') or tab == self.active_tab:
@@ -134,15 +127,20 @@ class RulesEditor:
         if tab == 'rules' and self.load_error:
             self.show_error(self.load_error)
         if tab == 'rules':
-            self.save_button.pack(side='right', pady=(0, 7))
+            self.save_button.grid()
         else:
-            self.save_button.pack_forget()
+            self.save_button.grid_remove()
         self.update_tabs()
         self.changed()
 
     def resize(self, event):
         if event.widget == self.window:
             self.status.configure(wraplength=max(80, event.width - 44))
+            compact = event.width < 420 or event.height < 300
+            self.segment.set_compact(compact)
+            self.header.pack_configure(padx=8 if compact else 24,
+                                       pady=(6, 0) if compact else (18, 4))
+            self.content.pack_configure(padx=(6, 4) if compact else (18, 10))
 
     def focus(self):
         self.window.deiconify()
