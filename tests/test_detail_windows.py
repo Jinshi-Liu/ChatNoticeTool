@@ -265,6 +265,85 @@ class DetailTests(unittest.TestCase):
             self.assertEqual(int(self.root.tk.splitlist(widget.cget('font'))[1]),-pixels)
         self.assertEqual(a.title.winfo_class(),'Entry')
 
+    def test_clear_completed_visibility_and_empty_state(self):
+        self.assertFalse(self.app.completed_actions.winfo_manager())
+        with patch('todo_widget.messagebox.askyesno') as confirm:
+            self.app.clear_completed()
+            self.app.switch(True); self.root.update()
+            self.assertEqual(self.app.completed_actions.winfo_manager(),'pack')
+            self.assertEqual(str(self.app.clear_completed_button.cget('state')),'disabled')
+            self.app.clear_completed()
+            confirm.assert_not_called()
+        self.store.mark('a',True); self.app.render()
+        self.assertEqual(str(self.app.clear_completed_button.cget('state')),'normal')
+        self.app.switch(False)
+        self.assertFalse(self.app.completed_actions.winfo_manager())
+
+    def test_clear_completed_cancel_then_confirm_preserves_pending_and_draft(self):
+        self.store.mark('a',True); self.app.switch(True)
+        completed=self.open('a'); pending=self.open('b')
+        draft=self.app.editor(); draft.window.withdraw()
+        with patch('todo_widget.messagebox.askyesno',return_value=False):
+            self.app.clear_completed_button.invoke()
+        self.assertFalse(self.store.get('a')['removed'])
+        self.assertFalse(completed.closed)
+        with patch('todo_widget.messagebox.askyesno',return_value=True):
+            self.app.clear_completed_button.invoke()
+        self.assertTrue(self.store.get('a')['removed'])
+        self.assertTrue(completed.closed)
+        self.assertFalse(self.store.get('b')['removed'])
+        self.assertFalse(pending.closed); self.assertFalse(draft.closed)
+        self.assertEqual(self.app.canvas.rows,{})
+        self.assertEqual(str(self.app.clear_completed_button.cget('state')),'disabled')
+
+    def test_clear_completed_cancel_invalid_draft_keeps_entire_batch(self):
+        for id in ('a','b'): self.store.mark(id,True)
+        self.app.switch(True)
+        a=self.open('a'); a.due_var.set('无效日期'); self.root.update()
+        with patch('todo_widget.messagebox.askyesno',side_effect=[True,False]):
+            self.app.clear_completed()
+        self.assertFalse(a.closed)
+        self.assertEqual(a.due_var.get(),'无效日期')
+        self.assertEqual(len(self.store.tasks(done=True)),2)
+
+    def test_clear_completed_saves_dirty_details_before_removing(self):
+        self.store.mark('a',True); self.app.switch(True)
+        a=self.open('a'); a.note.insert('end',' 未保存内容'); self.root.update()
+        with patch('todo_widget.messagebox.askyesno',return_value=True):
+            self.app.clear_completed()
+        task=self.store.get('a')
+        self.assertTrue(task['removed']); self.assertIn('未保存内容',task['note'])
+        self.assertTrue(a.closed)
+
+    def test_clear_completed_handles_changes_during_confirmation(self):
+        self.store.mark('a',True); self.app.switch(True)
+        a=self.open('a')
+        def confirm(*args,**kwargs):
+            self.store.mark('a',False)
+            self.store.mark('b',True)
+            return True
+        with patch('todo_widget.messagebox.askyesno',side_effect=confirm):
+            self.app.clear_completed()
+        self.assertFalse(self.store.get('a')['removed'])
+        self.assertFalse(self.store.get('b')['removed'])
+        self.assertFalse(a.closed)
+        self.assertEqual(set(self.app.canvas.rows),{'b'})
+
+    def test_clear_completed_button_fits_small_windows(self):
+        self.app.switch(True); self.root.deiconify()
+        try:
+            for width,height in ((220,160),(280,200),(500,700)):
+                self.root.geometry(f'{width}x{height}+100+100'); self.root.update()
+                button=self.app.clear_completed_button
+                self.assertGreaterEqual(button.winfo_rootx(),self.root.winfo_rootx())
+                self.assertLessEqual(button.winfo_rootx()+button.winfo_width(),
+                                     self.root.winfo_rootx()+self.root.winfo_width())
+                self.assertGreaterEqual(button.winfo_rooty(),
+                                        self.app.header.winfo_rooty()+self.app.header.winfo_height())
+                self.assertLessEqual(button.winfo_rooty()+button.winfo_height(),
+                                     self.root.winfo_rooty()+self.root.winfo_height())
+        finally: self.root.withdraw()
+
     def test_icon_save_never_changes_completion_and_has_no_save_words(self):
         self.store.mark('a',True)
         a=self.open('a'); a.note.insert('end',' 保存测试'); self.root.update()

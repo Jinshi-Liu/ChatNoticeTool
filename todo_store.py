@@ -277,6 +277,17 @@ class TodoStore:
                                 (int(removed),datetime.now().isoformat(timespec='seconds'),id))
             if cursor.rowcount != 1: raise ValueError('待办不存在')
 
+    def remove_completed(self, ids: list[str]) -> list[str]:
+        """Remove the confirmed snapshot atomically, skipping tasks restored meanwhile."""
+        now = datetime.now().isoformat(timespec='seconds')
+        removed = []
+        with self.connection() as db:
+            for id in dict.fromkeys(ids):
+                cursor = db.execute('''UPDATE tasks SET removed=1,updated_at=?
+                    WHERE id=? AND done=1 AND removed=0''', (now,id))
+                if cursor.rowcount: removed.append(id)
+        return removed
+
     def setting(self, key: str, default=None):
         with self.connection() as db:
             row = db.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()

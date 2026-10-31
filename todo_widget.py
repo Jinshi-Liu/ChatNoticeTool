@@ -12,7 +12,7 @@ import tkinter as tk
 from tkinter import messagebox
 
 from todo_store import TodoStore
-from widget_ui import TaskCanvas, SegmentedControl, BG, MUTED, ACCENT, RED
+from widget_ui import TaskCanvas, SegmentedControl, BG, MUTED, ACCENT, RED, FONT, CARD
 from glass_style import IconButton, set_topmost, bind_topmost
 from todo_detail import DetailWindow
 from rules_editor import RulesEditor
@@ -91,6 +91,13 @@ class TodoWidget:
             button.grid(row=0,column=column,padx=(0,4) if column<2 else 0)
         self.update_pin()
 
+        self.completed_actions = tk.Frame(root,bg=BG)
+        self.clear_completed_button = tk.Button(self.completed_actions,text='清空已完成',
+            command=self.clear_completed,font=(FONT,-16),fg=RED,bg=BG,
+            activeforeground=RED,activebackground=CARD,disabledforeground=MUTED,
+            relief='flat',bd=0,highlightthickness=0,padx=8,pady=4,cursor='hand2')
+        self.clear_completed_button.pack(side='right')
+
         body = tk.Frame(root,bg=BG); self.body=body
         body.pack(fill='both',expand=True,padx=(18,10))
         self.canvas = TaskCanvas(body,on_toggle=self.toggle_id,on_detail=self.detail_id,
@@ -119,6 +126,8 @@ class TodoWidget:
         compact=width<420 or height<300
         self.compact=compact
         margin=8 if compact else 24
+        if self.completed_actions.winfo_manager():
+            self.completed_actions.pack_configure(padx=margin)
         size=48
         self.segment.set_compact(compact)
         layout=(compact,int(self.segment.cget('width')))
@@ -188,6 +197,13 @@ class TodoWidget:
             self.segment.update_state(pending,completed,self.view_done)
             self.summary_state=summary
             self.layout_header()
+        self.clear_completed_button.configure(state='normal' if completed else 'disabled')
+        if self.view_done:
+            if not self.completed_actions.winfo_manager():
+                self.completed_actions.pack(fill='x',padx=8 if self.compact else 24,
+                                            pady=(0,6),before=self.body)
+        else:
+            self.completed_actions.pack_forget()
         visible = [t for t in tasks if bool(t['done']) == self.view_done]
         self.canvas.sync(visible,empty_text='当前没有待办' if not self.view_done else '完成的事项会放在这里',
                          reset_scroll=reset_scroll)
@@ -226,6 +242,27 @@ class TodoWidget:
 
     def details(self,task):
         return self.editor(task)
+
+    def clear_completed(self):
+        if not self.view_done: return
+        try:
+            tasks = self.store.tasks(done=True)
+            if not tasks:
+                self.render()
+                return
+            if not messagebox.askyesno('清空已完成',
+                    f'移除这 {len(tasks)} 项已完成待办？\n不影响未完成事项或群消息。',
+                    parent=self.root): return
+            for task in tasks:
+                detail = self.details_windows.get(task['id'])
+                if detail and not detail.prepare_close(): return
+            removed = self.store.remove_completed([task['id'] for task in tasks])
+            for id in removed:
+                detail = self.details_windows.get(id)
+                if detail: detail.close(force=True)
+            self.render()
+        except (OSError,ValueError,sqlite3.Error) as exc:
+            messagebox.showerror('未保存',str(exc),parent=self.root)
 
     def editor(self,task=None):
         if task:

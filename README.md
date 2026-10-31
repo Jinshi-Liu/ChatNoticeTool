@@ -20,6 +20,10 @@ py -3.13 -m venv .venv
 
 以后双击 `todo-widget.cmd` 即可打开。只用待办时，可以跳过依赖安装。
 
+## 桌面待办
+
+- **清空已完成**：切到“完成”页，点击列表上方的按钮并确认，一次移除本次选定的已完成事项；空列表时按钮禁用。未完成事项、确认期间新完成的事项，以及已经恢复为待办的事项不受影响。有未保存的详情修改时先处理草稿，取消关闭则不批量移除。与单项移除一样，助手更新同一ID不会自动恢复已移除事项。
+
 ## 交给 Agent
 
 将 [`skills/chatnotice`](skills/chatnotice) 文件夹复制到所用 Agent 支持的 skills 目录，再告知 ChatNoticeTool 项目路径。
@@ -49,6 +53,12 @@ python -B -X utf8 agent_cli.py write --input -
 切换页签保留规则草稿。规则是否加载、何时重新加载由当前 Agent 宿主决定。旧配置迁移见[配置指南](docs/agent/configuration.md)。
 
 更新源码时，保留自己的 `AGENTS.md`、`config.json`、`state/` 和 `exports/`。
+
+## 贡献者
+
+感谢所有反馈与贡献！
+
+- [@ouzefeng113](https://github.com/ouzefeng113)：贡献“清空已完成”功能、测试和使用说明（[#2](https://github.com/Jinshi-Liu/ChatNoticeTool/issues/2)）。
 
 ---
 

@@ -64,6 +64,40 @@ class TodoTests(unittest.TestCase):
         self.store.set_setting('pinned',False)
         self.assertFalse(TodoStore(self.store.path).setting('pinned',True))
 
+    def test_bulk_remove_only_confirmed_completed_tasks(self):
+        for id in ('done','pending','other','removed'):
+            self.store.upsert(id,id=id)
+        for id in ('done','other','removed'): self.store.mark(id,True)
+        self.store.remove('removed')
+        prior_removed=self.store.get('removed')
+        done_at=self.store.get('done')['done_at']
+        self.assertEqual(self.store.remove_completed(['done','pending','removed','done']),['done'])
+        self.assertFalse(self.store.get('pending')['removed'])
+        self.assertFalse(self.store.get('other')['removed'])
+        self.assertEqual(self.store.get('removed'),prior_removed)
+        self.assertEqual(self.store.get('done')['done_at'],done_at)
+        self.store.upsert('助手更新',id='done')
+        self.assertTrue(TodoStore(self.store.path).get('done')['removed'])
+        self.assertEqual(self.store.remove_completed([]),[])
+
+    def test_bulk_remove_skips_task_restored_since_confirmation(self):
+        self.store.upsert('已恢复',id='restored'); self.store.mark('restored',True)
+        ids=[t['id'] for t in self.store.tasks(done=True)]
+        TodoStore(self.store.path).mark('restored',False)
+        self.assertEqual(self.store.remove_completed(ids),[])
+        self.assertFalse(self.store.get('restored')['removed'])
+
+    def test_bulk_remove_rolls_back_all_on_database_error(self):
+        for id in ('a','b'):
+            self.store.upsert(id,id=id); self.store.mark(id,True)
+        with self.store.connection() as db:
+            db.execute('''CREATE TRIGGER fail_bulk_remove BEFORE UPDATE OF removed ON tasks
+                WHEN NEW.id='b' AND NEW.removed=1
+                BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END''')
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.store.remove_completed(['a','b'])
+        self.assertEqual(len(self.store.tasks(done=True)),2)
+
     def test_due_order_and_unknown_deadline(self):
         self.store.upsert('无明确截止',id='unknown')
         self.store.upsert('晚',id='late',due='2026-10-13')
